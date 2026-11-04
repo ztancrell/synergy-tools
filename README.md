@@ -393,3 +393,7 @@ sudo ufw allow 24850/udp
 
 Windows only sends, so its firewall normally needs no change. If Windows asks about network
 access the first time you run it, allow it on private networks.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
