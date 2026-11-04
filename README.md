@@ -396,4 +396,4 @@ access the first time you run it, allow it on private networks.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+GPL-3.0-or-later, see [LICENSE](LICENSE). Copyright (c) 2026 ztancrell.
