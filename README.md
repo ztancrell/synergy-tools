@@ -5,8 +5,9 @@ Shares audio between two machines that already share keyboard and mouse with Syn
 on the LAN; the other plays it on its default output, with a small jitter buffer for low
 latency.
 
-**Status: early, step 1.** Windows → Linux only, terminal only. No GUI, no Synergy
-integration, no switching direction.
+**Status: early, step 1.** Windows → Linux only, terminal only (plus optional autostart:
+a systemd user service for the Linux receiver, a scheduled task for the Windows sender).
+No GUI, no Synergy integration, no switching direction.
 
 ## Author's setup
 
@@ -37,7 +38,8 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
    ```sh
    rustup target add x86_64-pc-windows-gnu
    ```
-2. Open the audio port in the firewall (ufw):
+2. Open the audio port in the firewall (ufw). If you'll use Linux autostart (step 13),
+   skip this: `install-autostart.sh` opens the port itself when it isn't open yet. By hand:
    ```sh
    sudo ufw allow 24850/udp
    ```
@@ -99,20 +101,140 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
     ```sh
     cd ~/projects/synergy-audio && ./dev.sh --buffer-ms 40
     ```
+    Once Linux autostart is installed (step 13), `./dev.sh` updates and restarts the
+    service instead and shows its log; see step 16.
 12. On Windows, stop any running sender (Ctrl+C), then fetch the newest build and start
     sending (it asks for your Linux password):
     ```
     powershell -ExecutionPolicy Bypass -File .\update.ps1
     ```
 
-**Mute Windows to stop double audio.** The sender copies what Windows plays; it doesn't
-redirect it, so you hear the sound from both the Mac's speakers and your headphones. Mute
-Windows (the taskbar speaker icon): on the author's MacBook Pro, capture happens before the
-volume control, so the speakers go silent and the headphones keep playing. If muting
-silences your headphones too, your sound driver applies the volume before capture, so this
-trick won't work on that machine.
+### Start the receiver automatically at Linux login (optional)
 
-**Volume.** For the same reason, the main Windows volume slider no longer changes what you
+After this, the receiver runs by itself, with no terminal, as a systemd **user** service
+(it has to run in your login session to play through PipeWire): it starts when you log
+in, including after a reboot, and restarts 3 s after a crash. Its status lines go to the
+journal instead of a terminal.
+
+13. On Linux, install it (it builds the release version first):
+    ```sh
+    cd ~/projects/synergy-audio && ./install-autostart.sh
+    ```
+    It copies the program to `~/.local/bin/synergy-audio`, writes
+    `~/.config/systemd/user/synergy-audio.service` (runs `synergy-audio receive --buffer-ms
+    40`), enables and starts it. A receiver you started by hand in a terminal holds the
+    audio port, so the script stops it (it says so). If ufw (or firewalld) is active and
+    UDP 24850 isn't open yet, it opens it and **asks for your sudo password** for that only;
+    if the port is already open it doesn't ask. For another buffer:
+    `./install-autostart.sh --buffer-ms 60`. Rerunning without `--buffer-ms` keeps the
+    installed value.
+14. Check it's running:
+    ```sh
+    systemctl --user status synergy-audio
+    ```
+    It should say `active (running)`. Watch its status lines live (Ctrl+C closes only the
+    log view; the receiver keeps running):
+    ```sh
+    journalctl --user -u synergy-audio -f -o cat
+    ```
+    Play something on Windows: you should see `receive: audio arriving from ...` and then
+    the 5-second status lines.
+15. Reboot and log in: the receiver is running again by itself (check as in step 14).
+16. Updates now: run step 11 as before (`./dev.sh`, no need to stop anything first). It
+    sees the service, builds both versions, copies the new program to `~/.local/bin`,
+    restarts the service and follows its log (Ctrl+C closes only the log view). The buffer
+    stays as installed unless you pass one: `./dev.sh --buffer-ms 60` changes it for good.
+17. To turn autostart off:
+    ```sh
+    ./uninstall-autostart.sh
+    ```
+    It stops and disables the service and removes its unit file. It leaves
+    `~/.local/bin/synergy-audio` and the firewall rule in place and prints the commands to
+    remove them. After that, `./dev.sh` goes back to running the receiver in the terminal.
+
+### Start the sender automatically at Windows login (optional)
+
+After this, the sender starts by itself, with no window, every time you log in to
+Windows, including after a reboot. It keeps sending to `192.168.254.90` and writes its
+status to a log file instead of a window. Together with Linux autostart (steps 13-17)
+nothing needs starting by hand on either side; without it, start the Linux receiver by
+hand (step 11, or `cargo run --release -- receive`).
+
+18. On Windows, fetch the two autostart scripts once, into the same Downloads folder that
+    holds `synergy-audio.exe` (it asks for your Linux password each time):
+    ```
+    cd $HOME\Downloads
+    scp zpt@192.168.254.90:projects/synergy-audio/install-autostart.ps1 .
+    scp zpt@192.168.254.90:projects/synergy-audio/uninstall-autostart.ps1 .
+    ```
+19. Close any sender you started by hand (Ctrl+C in its window), then install. A normal
+    (not administrator) PowerShell is enough:
+    ```
+    powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1
+    ```
+    It copies `synergy-audio.exe` to `C:\Users\bootcamp\AppData\Local\synergy-audio\`
+    (`$env:LOCALAPPDATA\synergy-audio`), registers a Task Scheduler task named
+    `synergy-audio` that runs it 10 s after you log in (only while you're logged on, so it
+    can capture your audio), and starts it right away. To send to another IP:
+    `.\install-autostart.ps1 -Desktop 192.168.1.20`. If it fails with "Access is denied",
+    open PowerShell as administrator (right-click → **Run as administrator**), `cd` to
+    `C:\Users\bootcamp\Downloads`, and run the same command again.
+20. Check it's running: Task Manager → **Details** tab → `synergy-audio.exe` is listed. Its
+    log is `C:\Users\bootcamp\AppData\Local\synergy-audio\synergy-audio.log`; show the last
+    lines with:
+    ```
+    Get-Content $env:LOCALAPPDATA\synergy-audio\synergy-audio.log -Tail 5
+    ```
+    You should see `send: 200 packets/s ...` lines while something plays. Start the receiver
+    on Linux and listen: the lines then end in `receiver ok (...), muted by us`.
+21. Reboot Windows and log in: after about 10 s the sender is running again by itself
+    (check as in step 20). Nothing to start by hand on Windows.
+22. Updates now: step 11 on Linux, then step 12 on Windows as before. `update.ps1` sees the
+    task, stops it, copies the new build into `$env:LOCALAPPDATA\synergy-audio\`, restarts
+    the task and prints the log's last lines. It no longer runs a sender in the PowerShell
+    window, so there is nothing to Ctrl+C first. (Steps 18-19 aren't needed again unless
+    the autostart scripts themselves change; then fetch and rerun them.)
+23. To turn autostart off:
+    ```
+    powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1
+    ```
+    It removes the task, stops the running sender and unmutes the Mac's speakers if the
+    sender had muted them (see [Auto-mute](#auto-mute-of-the-macs-speakers)). It leaves the folder
+    `$env:LOCALAPPDATA\synergy-audio` (program and log) in place and prints the command to
+    delete it. After that, `update.ps1` goes back to running the sender in its window.
+
+### Auto-mute of the Mac's speakers
+
+The sender copies what Windows plays; it doesn't redirect it, so without muting you'd hear
+the sound from both the Mac's speakers and your headphones. **The sender now mutes Windows
+by itself, but only while the Linux receiver is actually receiving**, so you never end up
+with no sound anywhere. Nothing to set up:
+
+- Every 500 ms the sender sends a small keepalive; the receiver answers each one with an
+  ack. While the last ack is less than 1.5 s old, the sender keeps the Windows default
+  speakers muted (the taskbar speaker icon shows muted). When acks stop (receiver closed,
+  network down), it unmutes them within about 2 s.
+- **Your own mute is respected:** if the speakers are already muted when the sender would
+  mute them, it leaves them alone and never unmutes them. If you unmute while the receiver
+  is running, the sender mutes again within half a second; close the receiver (or the
+  sender) to get the speakers back.
+- **If the sender is killed** (Task Manager, `Stop-Process`, stopping the scheduled task,
+  a crash), it can't unmute. It leaves a marker file,
+  `%LOCALAPPDATA%\synergy-audio\muted-by-us`, while it has the speakers muted; the next
+  start of the sender (autostart at login, `update.ps1`) sees it and unmutes first, and
+  `uninstall-autostart.ps1` runs `synergy-audio.exe unmute`, which does the same. Ctrl+C
+  or closing the sender's window unmutes right away. If the speakers ever stay muted with
+  no sender running, run `synergy-audio.exe unmute` or just unmute with the taskbar icon.
+
+This works because on the author's MacBook Pro capture happens before the volume control:
+muted speakers go silent and the headphones keep playing. If muting silences your
+headphones too, your sound driver applies the volume before capture, and auto-mute will
+cut your stream while the receiver runs; you'd see `muted by us` in the status line and
+hear nothing. (There's no switch to turn auto-mute off yet; say so if you need one.)
+
+### Volume and crackles
+
+**Volume.** Because capture happens before the volume control, the main Windows volume slider no longer changes what you
 hear: the sender always gets the sound at full level, so it can be very loud. Turn it down
 with any of these:
 
@@ -132,8 +254,16 @@ connection allows a smaller buffer and less delay.
 
 - Format: uncompressed 16-bit (i16) stereo, 48 kHz. Both devices must run at 48 kHz (no
   resampling); otherwise it exits with an error that says how to change the rate.
-- One UDP packet = 8-byte sequence number (u64, little-endian) + 5 ms of audio
+- One UDP audio packet = 8-byte sequence number (u64, little-endian) + 5 ms of audio
   (240 frames = 960 bytes). Packets that arrive late or twice are dropped.
+- Control packets are exactly 4 bytes, a length no audio packet can have (audio is 8 bytes
+  plus whole 4-byte stereo frames): keepalive `SAka` (ASCII), sent by the sender every
+  500 ms on the same socket as the audio, and ack `SAak`, which the receiver sends back to
+  the keepalive's source address and port. Both sides must run the same version.
+- On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
+  acks are under 1.5 s old; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
+  the keepalive thread, never in the capture callback. On Linux the sender only reports
+  what Windows would do.
 - The sender captures the default output device (WASAPI loopback on Windows). More than
   two channels: it sends only front left/right. Mono is copied to both channels.
 - The capture callback never sends on the network itself (a stalled send would make it miss
@@ -167,11 +297,25 @@ On Windows (the machine whose audio you want to hear):
 ```
 synergy-audio.exe send 192.168.1.20         # port 24850 by default
 synergy-audio.exe send 192.168.1.20:24850
+synergy-audio.exe send 192.168.1.20 --log C:\path\synergy-audio.log   # unattended (autostart)
+synergy-audio.exe unmute                    # undo auto-mute left by a killed sender
 ```
 
-Both sides print status to stderr every 5 s. The sender prints packets/s, which should be
+`--log <file>` is for running without a terminal (the autostart task uses it). It writes
+the status lines to that file instead of stderr, appending; when the file grows past 1 MiB
+it is emptied and starts over (about a day of status lines). On errors (e.g. no audio
+device yet right after login) it logs the error and retries every 10 s instead of exiting.
+On Windows it also detaches from its console (`FreeConsole`), so the console window Task
+Scheduler opens for it closes at once (a brief flash at most). Stop it with Task Manager or
+`uninstall-autostart.ps1`, not Ctrl+C.
+
+Both sides print status to stderr (or the `--log` file) every 5 s. The sender prints packets/s, which should be
 about 200, plus running totals of packets dropped because the queue was full and of failed
-sends, e.g. `send: 200 packets/s, queue-full dropped 0, send errors 0`. Send errors are
+sends, then whether the receiver answers and the mute state, e.g.
+`send: 200 packets/s, queue-full dropped 0, send errors 0, receiver ok (ack 0.3 s ago), muted by us`
+or `send: 0 packets/s, queue-full dropped 0, send errors 4, receiver not heard (last ack 12 s ago), not muted`.
+The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
+failed: ...`, or on Linux `no muting on this OS (Windows would be muted)`. Send errors are
 normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate packets
 dropped, and trims. If underruns keep rising, raise `--buffer-ms`.
 
@@ -187,6 +331,23 @@ Arguments are passed to `receive`:
 ./dev.sh
 ./dev.sh --buffer-ms 40
 ```
+
+If the user service is installed (`~/.config/systemd/user/synergy-audio.service` exists),
+`./dev.sh` instead runs `./install-autostart.sh` with its arguments (only `--buffer-ms N`
+is accepted then; without it the installed buffer is kept), which copies the new binary
+and restarts the service, then follows the log with `journalctl --user -u synergy-audio -f
+-o cat`. Ctrl+C stops only the log view.
+
+`install-autostart.sh [--buffer-ms N]` runs `cargo build --release`, copies
+`target/release/synergy-audio` to `~/.local/bin/` (temp file + rename, so it works while
+the old one runs), writes the user unit `~/.config/systemd/user/synergy-audio.service`
+(`Wants=pipewire.service`, `After=pipewire.service pipewire-pulse.service`,
+`ExecStart=%h/.local/bin/synergy-audio receive --buffer-ms N`, `Restart=on-failure`,
+`RestartSec=3`, `WantedBy=default.target`; N defaults to the installed value, else 40),
+stops receivers started by hand, opens UDP 24850 in ufw or firewalld if active and not open
+yet (with sudo), then `daemon-reload`, `enable` and `restart`, and prints the status.
+`uninstall-autostart.sh` disables and stops the service and removes the unit, keeping the
+binary and the firewall rule (it prints how to remove them).
 
 On Windows, `update.ps1` copies the Windows build from the desktop with `scp` into its own
 folder and starts `synergy-audio.exe send <desktop>`. If the copy fails it stops; usually
@@ -204,10 +365,27 @@ powershell -ExecutionPolicy Bypass -File .\update.ps1
 powershell -ExecutionPolicy Bypass -File .\update.ps1 -Desktop 192.168.1.20 -User me
 ```
 
+If autostart is installed (scheduled task `synergy-audio`), `update.ps1` instead stops the
+task and any running sender, copies the build into `$env:LOCALAPPDATA\synergy-audio\`,
+restarts the task (on the old build if the copy failed) and shows the log's last lines.
+`-Desktop` then only picks where to copy from; the target the task sends to is set by
+`install-autostart.ps1 -Desktop`.
+
+`install-autostart.ps1 [-Desktop host]` copies `synergy-audio.exe` from its own folder to
+`$env:LOCALAPPDATA\synergy-audio\` and registers (or replaces) a Task Scheduler task
+`synergy-audio`: at logon of the current user (10 s delay), interactive (runs only while
+logged on, in your session), action `synergy-audio.exe send <host> --log
+$env:LOCALAPPDATA\synergy-audio\synergy-audio.log`, no time limit, runs on battery, restart
+every minute on failure; then starts it. `uninstall-autostart.ps1` stops and removes the
+task, stops any running `synergy-audio.exe` and runs `synergy-audio.exe unmute`, keeping
+the folder. Fetch both once with
+`scp` (setup step 18).
+
 ## Firewall
 
 The receiver needs inbound UDP 24850. On the Linux machine, ufw is active (firewalld is
-not), so open the port:
+not). `install-autostart.sh` opens the port if it isn't open yet (ufw or firewalld); to
+open it by hand:
 
 ```sh
 sudo ufw allow 24850/udp
