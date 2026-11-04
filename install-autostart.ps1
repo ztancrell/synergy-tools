@@ -28,6 +28,7 @@ Start-Sleep -Seconds 1
 
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item -LiteralPath $src -Destination $exe -Force
+Unblock-File -LiteralPath $exe  # drop the downloaded-from-internet mark a release zip leaves
 
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 # The exe detaches from its console when given --log, so no window stays open.

@@ -1,13 +1,67 @@
 # synergy-audio
 
+[![CI](https://github.com/ztancrell/synergy-audio/actions/workflows/ci.yml/badge.svg)](https://github.com/ztancrell/synergy-audio/actions/workflows/ci.yml)
+
 Shares audio between two machines that already share keyboard and mouse with Synergy 3
 (which carries no audio). One machine captures everything it plays and streams it over UDP
 on the LAN; the other plays it on its default output, with a small jitter buffer for low
 latency.
 
-**Status: early, step 1.** Windows → Linux only, terminal only (plus optional autostart:
+**Status: early (v0.2.0).** Windows → Linux only, terminal only (plus optional autostart:
 a systemd user service for the Linux receiver, a scheduled task for the Windows sender).
-No GUI, no Synergy integration, no switching direction.
+Prebuilt downloads on the [Releases page](https://github.com/ztancrell/synergy-audio/releases).
+No GUI, no Synergy integration, no switching direction, no self-update yet.
+
+## Download and install
+
+You need a Windows PC (the one whose audio you want to hear) and a Linux PC with PipeWire
+(the one with your headphones) on the same LAN. Both sound devices must run at 48 kHz.
+From the [Releases page](https://github.com/ztancrell/synergy-audio/releases), download
+the two archives of the newest release:
+
+- `synergy-audio-vX.Y.Z-linux-x86_64.tar.gz` for the Linux PC (built on Ubuntu 22.04, runs
+  on most current distros).
+- `synergy-audio-vX.Y.Z-windows-x86_64.zip` for the Windows PC (64-bit Windows 10/11).
+
+**Linux (receiver), first:**
+
+```sh
+tar xf synergy-audio-vX.Y.Z-linux-x86_64.tar.gz
+cd synergy-audio-vX.Y.Z
+./install-autostart.sh
+```
+
+It copies the bundled program to `~/.local/bin/synergy-audio` and installs a systemd user
+service that starts the receiver at every login (details: steps 13-17 below). If ufw or
+firewalld is active and UDP 24850 isn't open yet, it opens it and asks for your sudo
+password for that only. Note the Linux PC's LAN address (`ip -4 addr`, e.g.
+`192.168.1.20`).
+
+**Windows (sender):** right-click the zip → **Extract All**, open the extracted folder,
+click in the address bar, type `powershell` and press Enter. Then, with your Linux PC's
+address:
+
+```
+powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -Desktop 192.168.1.20
+```
+
+Always pass `-Desktop`: without it the sender goes to the author's address. It copies the
+program to `%LOCALAPPDATA%\synergy-audio` and starts it at every login, hidden (details:
+steps 19-23 below). If Windows shows "Windows protected your PC" when you run
+`synergy-audio.exe` yourself (the program is unsigned), click **More info → Run anyway**.
+Windows only sends, so its firewall needs no change.
+
+Play something on Windows: it should come out of the Linux PC, and the Windows speakers
+mute while it does ([Auto-mute](#auto-mute-of-the-macs-speakers)). To check, see steps
+14 and 20 below. To remove: `./uninstall-autostart.sh` on Linux,
+`powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1` on Windows.
+To update: download the new release and run the same install commands again.
+
+Optional: check the downloads against `SHA256SUMS` from the same release page:
+`sha256sum -c --ignore-missing SHA256SUMS` on Linux, `Get-FileHash <file>` on Windows
+(compare by eye).
+
+To build from source instead, follow [Setup, step by step](#setup-step-by-step).
 
 ## Author's setup
 
@@ -116,7 +170,8 @@ After this, the receiver runs by itself, with no terminal, as a systemd **user**
 in, including after a reboot, and restarts 3 s after a crash. Its status lines go to the
 journal instead of a terminal.
 
-13. On Linux, install it (it builds the release version first):
+13. On Linux, install it (in a source checkout it builds the release version first; in an
+    extracted release folder it installs the bundled program):
     ```sh
     cd ~/projects/synergy-audio && ./install-autostart.sh
     ```
@@ -301,6 +356,8 @@ synergy-audio.exe send 192.168.1.20 --log C:\path\synergy-audio.log   # unattend
 synergy-audio.exe unmute                    # undo auto-mute left by a killed sender
 ```
 
+`synergy-audio --version` (or `-V`) prints the version.
+
 `--log <file>` is for running without a terminal (the autostart task uses it). It writes
 the status lines to that file instead of stderr, appending; when the file grows past 1 MiB
 it is emptied and starts over (about a day of status lines). On errors (e.g. no audio
@@ -338,8 +395,9 @@ is accepted then; without it the installed buffer is kept), which copies the new
 and restarts the service, then follows the log with `journalctl --user -u synergy-audio -f
 -o cat`. Ctrl+C stops only the log view.
 
-`install-autostart.sh [--buffer-ms N]` runs `cargo build --release`, copies
-`target/release/synergy-audio` to `~/.local/bin/` (temp file + rename, so it works while
+`install-autostart.sh [--buffer-ms N]` runs `cargo build --release` (when `Cargo.toml` is
+next to it; in an extracted release it uses the bundled `synergy-audio` instead, and
+without either it stops with an error), copies the binary to `~/.local/bin/` (temp file + rename, so it works while
 the old one runs), writes the user unit `~/.config/systemd/user/synergy-audio.service`
 (`Wants=pipewire.service`, `After=pipewire.service pipewire-pulse.service`,
 `ExecStart=%h/.local/bin/synergy-audio receive --buffer-ms N`, `Restart=on-failure`,
@@ -373,7 +431,7 @@ restarts the task (on the old build if the copy failed) and shows the log's last
 
 `install-autostart.ps1 [-Desktop host]` copies `synergy-audio.exe` from its own folder to
 `$env:LOCALAPPDATA\synergy-audio\` and registers (or replaces) a Task Scheduler task
-`synergy-audio`: at logon of the current user (10 s delay), interactive (runs only while
+`synergy-audio` (removing the downloaded-file mark with `Unblock-File`): at logon of the current user (10 s delay), interactive (runs only while
 logged on, in your session), action `synergy-audio.exe send <host> --log
 $env:LOCALAPPDATA\synergy-audio\synergy-audio.log`, no time limit, runs on battery, restart
 every minute on failure; then starts it. `uninstall-autostart.ps1` stops and removes the
@@ -393,6 +451,33 @@ sudo ufw allow 24850/udp
 
 Windows only sends, so its firewall normally needs no change. If Windows asks about network
 access the first time you run it, allow it on private networks.
+
+## Releases and CI
+
+GitHub Actions run on every push and pull request (`.github/workflows/ci.yml`): `cargo
+test` and `cargo build --release` on Ubuntu 22.04 and Windows.
+
+Pushing a tag `v*` runs `.github/workflows/release.yml`: it checks the tag matches the
+`version` in `Cargo.toml` (and fails otherwise), builds Linux on Ubuntu 22.04 and Windows
+with MSVC and a static C runtime (no VC++ redistributable needed), packages
+`synergy-audio-<tag>-linux-x86_64.tar.gz` (folder `synergy-audio-<tag>/` with the binary,
+`install-autostart.sh`, `uninstall-autostart.sh`, README, LICENSE) and
+`synergy-audio-<tag>-windows-x86_64.zip` (files at the zip root: `synergy-audio.exe`,
+`install-autostart.ps1`, `uninstall-autostart.ps1`, README, LICENSE; `update.ps1` is the
+author's dev tool and is left out), writes `SHA256SUMS`, and creates the GitHub release with
+generated notes.
+
+### Making a release (maintainer)
+
+1. Bump `version` in `Cargo.toml` (e.g. `0.2.0`), run `cargo build` so `Cargo.lock`
+   follows, update the Status line above, commit and push.
+2. Tag and push the tag:
+   ```sh
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+3. Watch the Actions tab; the release appears on the Releases page when it finishes. If
+   the version guard fails (tag ≠ `Cargo.toml` version), delete the tag
+   (`git tag -d v0.2.0 && git push origin :refs/tags/v0.2.0`), fix, and tag again.
 
 ## License
 

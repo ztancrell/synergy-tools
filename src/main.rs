@@ -40,6 +40,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let res = match args.as_slice() {
+        ["--version" | "-V"] => {
+            println!("synergy-audio {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         ["send", target] => send(target),
         ["send", target, "--log", path] => send_logged(target, path),
         ["unmute"] => {
@@ -54,7 +58,8 @@ fn main() {
         _ => Err(format!(
             "usage:\n  synergy-audio send <host[:port]> [--log <file>]   (default port {PORT})\n  \
              synergy-audio receive [--buffer-ms N]   (default {DEFAULT_BUFFER_MS})\n  \
-             synergy-audio unmute   (undo the sender's auto-mute after it was killed)\n\
+             synergy-audio unmute   (undo the sender's auto-mute after it was killed)\n  \
+             synergy-audio --version\n\
              --log: write status to <file> instead of the terminal (emptied when it passes 1 MiB),\n  \
              retry every {}s on errors, and on Windows detach from the console window",
             RETRY_EVERY.as_secs()

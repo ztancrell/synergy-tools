@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run the receiver permanently on Linux: a systemd *user* service "synergy-audio" that
 # starts at login (it needs your PipeWire session), restarts on failure, logs to the journal.
-# Builds the release binary, copies it to ~/.local/bin, writes the unit, (re)starts it, and
+# Installs the synergy-audio binary next to this script (release tarball), else builds it
+# from source (repo checkout), copies it to ~/.local/bin, writes the unit, (re)starts it, and
 # opens UDP 24850 in ufw/firewalld if needed (only that asks for your sudo password).
 # Rerun to reinstall or update; dev.sh does that for you when the service is installed.
 # Usage: ./install-autostart.sh [--buffer-ms N]   (default: keep the installed value, else 40)
@@ -44,11 +45,21 @@ WantedBy=default.target
 EOF
 }
 
-cargo build --release
+# Source checkout: build it. Release tarball (no Cargo.toml): the binary sits next to this script.
+if [ -f Cargo.toml ]; then
+    cargo build --release
+    src="target/release/$name"
+elif [ -f "$name" ]; then
+    src="$name"
+else
+    echo "No '$name' binary next to this script and no Cargo.toml to build one from." >&2
+    echo "Run this from the extracted release folder or from a source checkout." >&2
+    exit 1
+fi
 
 # Copy to a temp name, then rename: a plain cp over the running binary fails ("Text file busy").
 mkdir -p "$(dirname "$bin")" "$(dirname "$unit")"
-install -m755 "target/release/$name" "$bin.new"
+install -m755 "$src" "$bin.new"
 mv -f "$bin.new" "$bin"
 unit_text "$buffer" > "$unit"
 
