@@ -8,6 +8,7 @@ use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamC
 use std::collections::VecDeque;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ const SAMPLES_PER_PACKET: usize = FRAMES_PER_PACKET * 2; // stereo
 const SAMPLES_PER_MS: usize = RATE as usize / 1000 * 2;
 const DEFAULT_BUFFER_MS: usize = 20;
 const STATS_EVERY: Duration = Duration::from_secs(5);
+const SEND_QUEUE: usize = 20; // packets between capture callback and sender thread (~100 ms)
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -119,11 +121,27 @@ fn send(target: &str) -> Result<(), String> {
         eprintln!("warning: {} channels, sending only the first two (front L/R)", config.channels);
     }
 
+    // The capture callback must never block, so it hands packets to a sender thread.
+    let (tx, rx) = sync_channel::<Vec<u8>>(SEND_QUEUE);
     let sent = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicU64::new(0));
+    {
+        let (sent, errors) = (sent.clone(), errors.clone());
+        std::thread::spawn(move || {
+            for pkt in rx {
+                // Errors are expected while the receiver isn't up yet; count, don't stop.
+                match sock.send(&pkt) {
+                    Ok(_) => sent.fetch_add(1, Relaxed),
+                    Err(_) => errors.fetch_add(1, Relaxed),
+                };
+            }
+        });
+    }
     let stream = match sup.sample_format() {
-        SampleFormat::F32 => build_capture::<f32>(&device, &config, sock, sent.clone()),
-        SampleFormat::I16 => build_capture::<i16>(&device, &config, sock, sent.clone()),
-        SampleFormat::I32 => build_capture::<i32>(&device, &config, sock, sent.clone()),
+        SampleFormat::F32 => build_capture::<f32>(&device, &config, tx, dropped.clone()),
+        SampleFormat::I16 => build_capture::<i16>(&device, &config, tx, dropped.clone()),
+        SampleFormat::I32 => build_capture::<i32>(&device, &config, tx, dropped.clone()),
         f => return Err(format!("unsupported sample format {f:?}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
@@ -132,7 +150,12 @@ fn send(target: &str) -> Result<(), String> {
     loop {
         std::thread::sleep(STATS_EVERY);
         let n = sent.load(Relaxed);
-        eprintln!("send: {:.0} packets/s", (n - prev) as f64 / STATS_EVERY.as_secs_f64());
+        eprintln!(
+            "send: {:.0} packets/s, queue-full dropped {}, send errors {}",
+            (n - prev) as f64 / STATS_EVERY.as_secs_f64(),
+            dropped.load(Relaxed),
+            errors.load(Relaxed)
+        );
         prev = n;
     }
 }
@@ -140,8 +163,8 @@ fn send(target: &str) -> Result<(), String> {
 fn build_capture<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    sock: UdpSocket,
-    sent: Arc<AtomicU64>,
+    tx: SyncSender<Vec<u8>>,
+    dropped: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample,
@@ -159,12 +182,13 @@ where
                     let r = if ch > 1 { frame[1].to_sample() } else { l };
                     pending.extend_from_slice(&[l, r]);
                 }
-                // ponytail: UDP send (and a small Vec alloc) inside the audio callback.
-                // Fine for a non-blocking datagram; move to a sender thread if capture glitches.
+                // ponytail: one small Vec alloc per packet in the callback; pool buffers if that ever glitches.
                 for chunk in pending.chunks_exact(SAMPLES_PER_PACKET) {
-                    let _ = sock.send(&encode(seq, chunk)); // receiver may not be up yet; ignore
+                    // Never block here: if the sender thread is behind, drop the packet.
+                    if let Err(TrySendError::Full(_)) = tx.try_send(encode(seq, chunk)) {
+                        dropped.fetch_add(1, Relaxed);
+                    }
                     seq += 1;
-                    sent.fetch_add(1, Relaxed);
                 }
                 let rem = pending.len() % SAMPLES_PER_PACKET;
                 pending.drain(..pending.len() - rem);
