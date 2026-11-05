@@ -11,6 +11,20 @@ pairing with an 8-digit code.
 **Status: in development.** Only the scaffold and the peer config exist so far; nothing can be
 sent yet.
 
+## Where files go
+
+Received files are saved in your Downloads folder.
+
+- A file is written under a hidden temporary name (`.name.xxxxxxxx.part`) and only gets its real
+  name once it has arrived completely, so you never see half a file.
+- An existing file is never replaced: a second `report.pdf` is saved as `report (1).pdf`,
+  then `report (2).pdf`, and so on.
+- File names from the other PC are cleaned up: folders in the name are dropped, and characters
+  Windows does not allow (`< > : " | ? *`) become `_`.
+- On Windows, received files are marked as downloaded from the internet (Mark of the Web,
+  `ZoneId=3`), so SmartScreen may ask before you open an executable. On Linux, received files
+  are never executable.
+
 ## Build from source
 
 ```sh
