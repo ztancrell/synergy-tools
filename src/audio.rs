@@ -1,7 +1,7 @@
-//! synergy-audio: stream system audio from one machine to another over UDP, encrypted.
+//! synergy-tools audio: stream system audio from one machine to another over UDP, encrypted.
 //!
-//! Pairing (`pair`, once per sender/receiver): SPAKE2 with an 8-digit code, `PAIR1`..`PAIR4`,
-//! gives both sides a 32-byte secret; the sender picks an 8-byte peer id.
+//! Pairing is shared with file transfer (`synergy-tools pair`, see `pair.rs`): it gives both
+//! sides a partner with a 32-byte secret and an 8-byte id, used here as peer id and PSK.
 //! Session: Noise NNpsk0 with that secret as PSK. `HELLO` + peer id + Noise message 1
 //! (sender), `HELLO_REPLY` + message 2 (receiver). After that every datagram, both ways, is
 //! [b'D'][nonce: u64 LE][ChaChaPoly(payload) + 16-byte tag]:
@@ -14,25 +14,24 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
-use sha2::{Digest, Sha256};
 use snow::{HandshakeState, StatelessTransportState};
-use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use crate::config;
+use std::net::{SocketAddr, UdpSocket};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const PORT: u16 = 24850;
+pub const PORT: u16 = 24850;
 const RATE: u32 = 48_000;
 const FRAMES_PER_PACKET: usize = 240; // 5 ms at 48 kHz
 const SAMPLES_PER_PACKET: usize = FRAMES_PER_PACKET * 2; // stereo
 const SAMPLES_PER_MS: usize = RATE as usize / 1000 * 2;
-const DEFAULT_BUFFER_MS: usize = 20;
+pub const DEFAULT_BUFFER_MS: usize = 20;
 const STATS_EVERY: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(100); // how often loops check `quit`
 const RELOAD_EVERY: Duration = Duration::from_secs(1); // unknown peer id: reload peers at most this often
@@ -42,60 +41,14 @@ const RETRY_EVERY: Duration = Duration::from_secs(10);
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(500);
 const ACK_FRESH: Duration = Duration::from_millis(1500); // newer ack = receiver is playing us
 const REHANDSHAKE: Duration = Duration::from_secs(3); // no ack for this long: new handshake
-const PAIR_TIMEOUT: Duration = Duration::from_secs(120);
 const NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
 const HELLO: &[u8] = b"SAh1";
 const HELLO_REPLY: &[u8] = b"SAh2";
-const PAIR1: &[u8] = b"SAp1"; // sender: SPAKE2 message A
-const PAIR2: &[u8] = b"SAp2"; // receiver: SPAKE2 message B + its confirmation
-const PAIR3: &[u8] = b"SAp3"; // sender: peer id + its confirmation
-const PAIR4: &[u8] = b"SAp4"; // receiver: confirmed and saved
 const KA_BIT: u64 = 1 << 63; // keepalive nonces; audio seqs never get that high
 
 /// Status line to the --log file if one is open, else stderr (see `say_line`).
 macro_rules! say {
     ($($t:tt)*) => { say_line(format!($($t)*)) };
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let res = match args.as_slice() {
-        ["--version" | "-V"] => {
-            println!("synergy-audio {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        ["pair"] => pair_receive(),
-        ["pair", host, code] => pair_send(host, code),
-        ["unpair"] => unpair(),
-        ["send", target] => run_send(target),
-        ["send", target, "--log", path] => send_logged(target, path),
-        ["unmute"] => {
-            mute::restore();
-            Ok(())
-        }
-        ["receive"] => run_receive(DEFAULT_BUFFER_MS),
-        ["receive", "--buffer-ms", n] => match n.parse() {
-            Ok(n) if n > 0 => run_receive(n),
-            _ => Err(format!("--buffer-ms needs a positive integer, got {n:?}")),
-        },
-        _ => Err(format!(
-            "usage:\n  synergy-audio pair   (on the receiver: shows a code, waits for the sender)\n  \
-             synergy-audio pair <receiver-host[:port]> <code>   (on the sender, once)\n  \
-             synergy-audio unpair   (delete all pairings on this machine)\n  \
-             synergy-audio send <host[:port]> [--log <file>]   (default port {PORT})\n  \
-             synergy-audio receive [--buffer-ms N]   (default {DEFAULT_BUFFER_MS})\n  \
-             synergy-audio unmute   (undo the sender's auto-mute after it was killed)\n  \
-             synergy-audio --version\n\
-             --log: write status to <file> instead of the terminal (emptied when it passes 1 MiB),\n  \
-             retry every {}s on errors, and on Windows detach from the console window",
-            RETRY_EVERY.as_secs()
-        )),
-    };
-    if let Err(e) = res {
-        say!("error: {e}");
-        std::process::exit(1);
-    }
 }
 
 // ---------- status output ----------
@@ -135,11 +88,10 @@ fn open_log(path: &str) -> Result<File, String> {
 }
 
 /// Unattended sender (autostart): log to a file, no console window, keep retrying.
-fn send_logged(target: &str, path: &str) -> Result<(), String> {
+pub fn run_send_logged(target: &str, path: &str) -> Result<(), String> {
     LOG.set(Mutex::new(open_log(path)?)).unwrap();
-    detach_console();
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    say!("--- synergy-audio send started (unix time {secs}) ---");
+    say!("--- synergy-tools audio send started (unix time {secs}) ---");
     // At login the audio device or network may not be ready yet; Task Scheduler does not
     // restart a task whose process exits with an error, so retry here instead.
     loop {
@@ -149,22 +101,6 @@ fn send_logged(target: &str, path: &str) -> Result<(), String> {
         std::thread::sleep(RETRY_EVERY);
     }
 }
-
-/// Close the console window Windows opens for a console program started by Task Scheduler.
-/// The binary stays a console program so manual runs in a terminal still print.
-#[cfg(windows)]
-fn detach_console() {
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn FreeConsole() -> i32;
-    }
-    unsafe {
-        FreeConsole();
-    }
-}
-
-#[cfg(not(windows))]
-fn detach_console() {}
 
 // ---------- stop control and shared state ----------
 
@@ -227,7 +163,7 @@ impl Shared {
     pub fn set_stopped(&self, on: bool) {
         let mut c = self.ctl.lock().unwrap();
         c.stopped = on;
-        c.epoch += 1;
+        c.epoch = c.epoch.saturating_add(1);
     }
 }
 
@@ -382,220 +318,6 @@ fn accept(last: Option<u64>, seq: u64) -> bool {
     last.is_none_or(|last| seq > last)
 }
 
-// ---------- pairing ----------
-
-fn random<const N: usize>() -> [u8; N] {
-    let mut b = [0; N];
-    getrandom::fill(&mut b).expect("no OS random number source");
-    b
-}
-
-fn digest(parts: &[&[u8]]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    for p in parts {
-        h.update(p);
-    }
-    h.finalize().into()
-}
-
-fn spake(code: &str, sender: bool) -> (Spake2<Ed25519Group>, Vec<u8>) {
-    let (pw, a, b) = (Password::new(code), Identity::new(b"synergy-audio sender"), Identity::new(b"synergy-audio receiver"));
-    if sender { Spake2::start_a(&pw, &a, &b) } else { Spake2::start_b(&pw, &a, &b) }
-}
-
-/// Receiver side of pairing: one attempt, from the first address that starts one.
-/// Returns the sender's peer id and the pairing secret.
-fn pair_receiver(sock: &UdpSocket, code: &str, timeout: Duration) -> Result<([u8; 8], [u8; 32]), String> {
-    sock.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-    let deadline = Instant::now() + timeout;
-    let mut buf = [0u8; 2048];
-    let mut state: Option<(SocketAddr, Vec<u8>, Vec<u8>)> = None; // sender, our reply, key
-    while Instant::now() < deadline {
-        let Ok((n, from)) = sock.recv_from(&mut buf) else { continue };
-        let m = &buf[..n];
-        match &state {
-            None => {
-                let Some(msg_a) = m.strip_prefix(PAIR1) else { continue };
-                let (s, msg_b) = spake(code, false);
-                let key = s.finish(msg_a).map_err(|_| "pairing failed: bad message from the sender")?;
-                let reply = [PAIR2, &msg_b, &digest(&[b"synergy-audio confirm B", &key])].concat();
-                let _ = sock.send_to(&reply, from);
-                state = Some((from, reply, key));
-            }
-            Some((addr, reply, _)) if from == *addr && m.starts_with(PAIR1) => {
-                let _ = sock.send_to(reply, from); // our reply got lost: same answer, no new attempt
-            }
-            Some((addr, _, key)) if from == *addr => {
-                let Some((peer, conf)) = m.strip_prefix(PAIR3).and_then(|r| r.split_first_chunk::<8>()) else {
-                    continue;
-                };
-                if conf != digest(&[b"synergy-audio confirm A", key, peer]) {
-                    return Err("pairing failed: wrong code (start again with a new code)".into());
-                }
-                let _ = sock.send_to(PAIR4, from);
-                return Ok((*peer, digest(&[b"synergy-audio secret", key])));
-            }
-            Some(_) => {}
-        }
-    }
-    Err("pairing timed out: no sender tried within 2 minutes".into())
-}
-
-/// Send `msg` (resent every second, 10 tries) until a reply starting with `want` arrives.
-fn exchange(sock: &UdpSocket, msg: &[u8], want: &[u8]) -> Result<Vec<u8>, String> {
-    let mut buf = [0u8; 2048];
-    for _ in 0..10 {
-        let _ = sock.send(msg);
-        let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            sock.set_read_timeout(Some(left)).unwrap();
-            match sock.recv(&mut buf) {
-                Ok(n) if buf[..n].starts_with(want) => return Ok(buf[want.len()..n].to_vec()),
-                Ok(_) => {}
-                Err(_) => std::thread::sleep(left), // e.g. ICMP port unreachable: wait out the second
-            }
-        }
-    }
-    Err(format!("no answer from the receiver: is `synergy-audio pair` running there, and UDP {PORT} open?"))
-}
-
-/// Sender side of pairing over a connected socket. Returns our new peer id and the secret.
-fn pair_sender(sock: &UdpSocket, code: &str) -> Result<([u8; 8], [u8; 32]), String> {
-    let (s, msg_a) = spake(code, true);
-    let reply = exchange(sock, &[PAIR1, &msg_a].concat(), PAIR2)?;
-    let (msg_b, conf) = reply.split_at_checked(reply.len().saturating_sub(32)).ok_or("bad reply")?;
-    let key = s.finish(msg_b).map_err(|_| "pairing failed: bad reply from the receiver")?;
-    let peer: [u8; 8] = random();
-    let msg3 = [PAIR3, &peer, &digest(&[b"synergy-audio confirm A", &key, &peer])].concat();
-    if conf != digest(&[b"synergy-audio confirm B", &key]) {
-        let _ = sock.send(&msg3); // the receiver sees the mismatch too and stops
-        return Err("pairing failed: wrong code (start again on the receiver for a new code)".into());
-    }
-    // ponytail: if only PAIR4 is lost the receiver is paired but we report failure; pair again.
-    exchange(sock, &msg3, PAIR4)?;
-    Ok((peer, digest(&[b"synergy-audio secret", &key])))
-}
-
-fn config_dir() -> Result<PathBuf, String> {
-    let var = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-    let base = if cfg!(windows) {
-        var("APPDATA")
-    } else if cfg!(target_os = "macos") {
-        var("HOME").map(|h| h.join("Library/Application Support"))
-    } else {
-        var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))
-    };
-    base.map(|b| b.join("synergy-audio")).ok_or("can't find the config directory (HOME / APPDATA not set)".into())
-}
-
-/// Write a pairing file, readable only by this user on unix (0600).
-fn write_secret(path: &Path, text: &str) -> Result<(), String> {
-    let err = |e: std::io::Error| format!("can't write {}: {e}", path.display());
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
-    let _ = std::fs::remove_file(path); // so the mode below applies
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    o.open(path).and_then(|mut f| f.write_all(text.as_bytes())).map_err(err)
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    let mut out = [0; N];
-    if s.len() != 2 * N {
-        return None;
-    }
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
-    }
-    Some(out)
-}
-
-const NOT_PAIRED: &str = "run `synergy-audio pair` on the receiver, then `synergy-audio pair <receiver-host> <code>` on the sender";
-
-/// Sender: the one paired receiver file: "<host> <peer id> <secret>".
-fn load_receiver() -> Result<(String, [u8; 8], [u8; 32]), String> {
-    let path = config_dir()?.join("receiver");
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("not paired yet ({} missing): {NOT_PAIRED}", path.display()))?;
-    match text.split_whitespace().collect::<Vec<_>>()[..] {
-        [host, peer, secret] => match (unhex(peer), unhex(secret)) {
-            (Some(p), Some(s)) => Ok((host.to_string(), p, s)),
-            _ => Err(format!("{} is damaged: {NOT_PAIRED}", path.display())),
-        },
-        _ => Err(format!("{} is damaged: {NOT_PAIRED}", path.display())),
-    }
-}
-
-/// Receiver: one file per paired sender, named by its peer id, holding the secret.
-fn load_senders() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
-    let dir = config_dir()?.join("senders");
-    let peers: HashMap<_, _> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let peer = unhex(e.file_name().to_str()?)?;
-            Some((peer, unhex(std::fs::read_to_string(e.path()).ok()?.trim())?))
-        })
-        .collect();
-    if peers.is_empty() {
-        return Err(format!("no sender paired yet (nothing in {}): {NOT_PAIRED}", dir.display()));
-    }
-    Ok(peers)
-}
-
-fn pair_receive() -> Result<(), String> {
-    let sock = UdpSocket::bind(("0.0.0.0", PORT)).map_err(|e| {
-        format!(
-            "can't bind UDP {PORT} ({e}). Is the receiver running? Stop it first \
-             (systemctl --user stop synergy-audio, or Ctrl+C), pair, then start it again."
-        )
-    })?;
-    let code = format!("{:08}", u64::from_le_bytes(random()) % 100_000_000);
-    let code_shown = format!("{}-{}", &code[..4], &code[4..]);
-    println!("Pairing code: {code_shown}");
-    println!("On the sender run:  synergy-audio pair <this machine's address> {code_shown}");
-    println!("Waiting up to {} minutes for one attempt...", PAIR_TIMEOUT.as_secs() / 60);
-    let (peer, secret) = pair_receiver(&sock, &code, PAIR_TIMEOUT)?;
-    let path = config_dir()?.join("senders").join(hex(&peer));
-    write_secret(&path, &format!("{}\n", hex(&secret)))?;
-    println!("Paired with sender {} (saved {}).", hex(&peer), path.display());
-    println!("Start the receiver (again): systemctl --user start synergy-audio, or synergy-audio receive");
-    Ok(())
-}
-
-fn pair_send(target: &str, code: &str) -> Result<(), String> {
-    let digits: String = code.chars().filter(|c| *c != '-' && *c != ' ').collect();
-    if digits.len() != 8 || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return Err(format!("the code is 8 digits as shown by `synergy-audio pair`, like 1234-5678; got {code:?}"));
-    }
-    let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
-    sock.connect(resolve(target)?).map_err(|e| e.to_string())?;
-    let (peer, secret) = pair_sender(&sock, &digits)?;
-    let path = config_dir()?.join("receiver");
-    write_secret(&path, &format!("{target} {} {}\n", hex(&peer), hex(&secret)))?;
-    println!("Paired with {target} (saved {}). Now run: synergy-audio send {target}", path.display());
-    Ok(())
-}
-
-fn unpair() -> Result<(), String> {
-    let dir = config_dir()?;
-    let mut n = usize::from(std::fs::remove_file(dir.join("receiver")).is_ok());
-    for e in std::fs::read_dir(dir.join("senders")).into_iter().flatten().flatten() {
-        n += usize::from(std::fs::remove_file(e.path()).is_ok());
-    }
-    println!("Removed {n} pairing file(s) from {}.", dir.display());
-    Ok(())
-}
-
 // ---------- shared device setup ----------
 
 /// Default output device config, forced to 48 kHz or a clear error.
@@ -626,19 +348,36 @@ fn default_output() -> Result<cpal::Device, String> {
 
 // ---------- send ----------
 
-fn resolve(target: &str) -> Result<SocketAddr, String> {
-    if target.contains(':') { target.to_socket_addrs() } else { (target, PORT).to_socket_addrs() }
-        .map_err(|e| format!("bad target {target:?}: {e}"))?
-        .find(SocketAddr::is_ipv4)
-        .ok_or(format!("{target:?} has no IPv4 address"))
+/// Paired PCs as peer id -> secret, for the receiver. Errors if there are none.
+pub fn peers() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+    peers_from(&config::config_dir()?)
 }
 
-/// CLI `send`: the paired receiver, auto-mute on, runs until killed.
-fn run_send(target: &str) -> Result<(), String> {
-    let (paired_with, peer, psk) = load_receiver()?;
-    let addr = resolve(target)?;
-    say!("send: paired with {paired_with}");
-    send(addr, peer, psk, Shared::new(true), Arc::new(AtomicBool::new(false)))
+fn peers_from(dir: &Path) -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+    let ps = config::load_partners_from(dir)?;
+    if ps.is_empty() {
+        return Err("not paired yet: run `synergy-tools pair` on one machine, then `synergy-tools pair <host> <code>` on the other".into());
+    }
+    Ok(ps.into_iter().map(|p| (p.id, p.secret)).collect())
+}
+
+pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
+    UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
+        format!(
+            "can't bind UDP {port}: {e}. Is another synergy-tools or the old synergy-audio receiver running? \
+             Stop it (old one: systemctl --user disable --now synergy-audio)"
+        )
+    })
+}
+
+/// CLI `audio send`: the partner named by `target`'s host part, auto-mute on, runs until killed.
+pub fn run_send(target: &str) -> Result<(), String> {
+    let partners = config::load_partners()?;
+    let host = target.rsplit_once(':').map_or(target, |(h, _)| h);
+    let p = config::find(&partners, host)?;
+    let addr = config::resolve(target, PORT)?;
+    say!("send: paired with {}", p.name);
+    send(addr, p.id, p.secret, Shared::new(true), Arc::new(AtomicBool::new(false)))
 }
 
 /// Capture the default output device and stream it to `addr` until `quit` is set; then stop
@@ -697,7 +436,7 @@ pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, qui
     }?;
     stream.play().map_err(|e| e.to_string())?;
 
-    // Spawned last: nothing below returns early, so send_logged's retries never stack threads.
+    // Spawned last: nothing below returns early, so run_send_logged's retries never stack threads.
     let link = Arc::new(Mutex::new(Link { last_ack: None, mute: String::new(), rejected: 0 }));
     let ka = {
         let (link, quit) = (link.clone(), quit.clone());
@@ -883,7 +622,7 @@ where
 // ---------- speaker mute (Windows) ----------
 
 #[cfg(windows)]
-mod mute {
+pub(crate) mod mute {
     use super::{mute_action, MuteAction};
     use std::path::PathBuf;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
@@ -893,7 +632,7 @@ mod mute {
     /// Exists exactly while we have the speakers muted, so a killed sender can be undone.
     fn marker() -> PathBuf {
         let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
-        base.join("synergy-audio").join("muted-by-us")
+        base.join("synergy-tools").join("muted-by-us")
     }
 
     // ponytail: looks up the default speakers on every call (2x a second); cache it if that ever shows up in a profile.
@@ -973,7 +712,7 @@ mod mute {
 
 /// Elsewhere (macOS sender, or Linux for testing) nothing is muted; report what Windows would do.
 #[cfg(not(windows))]
-mod mute {
+pub(crate) mod mute {
     use super::{mute_action, MuteAction};
 
     pub fn restore() {}
@@ -996,11 +735,10 @@ struct Jitter {
     underruns: u64,
 }
 
-/// CLI `receive`: needs at least one paired sender, binds UDP `PORT`, runs until killed.
-fn run_receive(buffer_ms: usize) -> Result<(), String> {
-    load_senders()?;
-    let sock = UdpSocket::bind(("0.0.0.0", PORT)).map_err(|e| format!("can't bind UDP {PORT}: {e}"))?;
-    receive(sock, buffer_ms, load_senders, Shared::new(true), Arc::new(AtomicBool::new(false)))
+/// CLI `audio receive`: needs at least one partner, binds UDP `PORT`, runs until killed.
+pub fn run_receive(buffer_ms: usize) -> Result<(), String> {
+    peers()?;
+    receive(bind_receiver(PORT)?, buffer_ms, peers, Shared::new(true), Arc::new(AtomicBool::new(false)))
 }
 
 /// Play what paired senders stream to `sock` until `quit` is set; returns within about 1 s.
@@ -1065,7 +803,7 @@ pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc
                 }
             }
             if rx.promoted != sessions {
-                eprintln!("receive: encrypted session with sender {} at {from}", hex(&rx.cur.as_ref().unwrap().peer));
+                eprintln!("receive: encrypted session with sender {} at {from}", crate::config::hex(&rx.cur.as_ref().unwrap().peer));
             }
         }
         let stopped = sh.ctl.lock().unwrap().stopped;
@@ -1153,28 +891,19 @@ mod tests {
         assert_eq!(pcm_samples(&pcm[..9]), None);
     }
 
-    fn pair_over_loopback(receiver_code: &str, sender_code: &str) -> (Result<([u8; 8], [u8; 32]), String>, Result<([u8; 8], [u8; 32]), String>) {
-        let rsock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let addr = rsock.local_addr().unwrap();
-        let code = receiver_code.to_string();
-        let r = std::thread::spawn(move || pair_receiver(&rsock, &code, Duration::from_secs(10)));
-        let ssock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        ssock.connect(addr).unwrap();
-        let s = pair_sender(&ssock, sender_code);
-        (r.join().unwrap(), s)
-    }
-
     #[test]
-    fn pairing_right_code() {
-        let (r, s) = pair_over_loopback("12345678", "12345678");
-        assert_eq!(r.unwrap(), s.unwrap());
-    }
-
-    #[test]
-    fn pairing_wrong_code_fails_on_both_sides() {
-        let (r, s) = pair_over_loopback("12345678", "12345679");
-        assert!(r.unwrap_err().contains("wrong code"));
-        assert!(s.unwrap_err().contains("wrong code"));
+    fn peers_come_from_partner_list() {
+        let mut r = [0u8; 8];
+        getrandom::fill(&mut r).unwrap();
+        let d = std::env::temp_dir().join(format!("sdd-audio-{}", config::hex(&r)));
+        assert!(peers_from(&d).unwrap_err().contains("not paired yet"));
+        for (n, b) in [("a", 1u8), ("b", 2)] {
+            let p = config::Partner { id: [b; 8], host: "h".into(), secret: [b + 10; 32], os: "linux".into(), name: n.into() };
+            config::add_partner_to(&d, p).unwrap();
+        }
+        let m = peers_from(&d).unwrap();
+        assert_eq!((m.len(), m[&[1; 8]], m[&[2; 8]]), (2, [11; 32], [12; 32]));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     const PEER: [u8; 8] = [1; 8];
@@ -1329,7 +1058,7 @@ mod tests {
 
     #[test]
     fn log_appends_then_starts_over_past_max() {
-        let path = std::env::temp_dir().join(format!("synergy-audio-test-{}.log", std::process::id()));
+        let path = std::env::temp_dir().join(format!("synergy-tools-test-{}.log", std::process::id()));
         std::fs::write(&path, "old\n").unwrap();
         let mut f = open_log(path.to_str().unwrap()).unwrap();
         log_line(&mut f, "a", 10).unwrap();

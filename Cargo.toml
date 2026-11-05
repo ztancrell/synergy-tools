@@ -11,6 +11,7 @@ spake2 = "0.4"
 getrandom = "0.3"
 sha2 = "0.10"
 dirs = "7"
+cpal = "0.18"
 tao = "0.37"
 # Linux: default backend = libappindicator (GTK), which falls back to an XEmbed status icon (tint2).
 tray-icon = "0.26"
@@ -25,3 +26,5 @@ gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
+# Auto-mute of the Windows speakers (same version cpal already pulls in).
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com"] }

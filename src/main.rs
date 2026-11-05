@@ -1,6 +1,7 @@
 // No console window for the tray app and Send To; terminal runs re-attach to the parent console.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod audio;
 mod config;
 mod tray;
 mod notify;
@@ -25,6 +26,12 @@ const USAGE: &str = "usage:
   synergy-tools files send [--to <name>] <file>...
                                         send files to a partner (--to if there are several)
   synergy-tools files listen            receive files without the tray app
+  synergy-tools audio send <host[:port]> [--log <file>]
+                                        stream this PC's sound to a partner (default port 24850);
+                                        --log: status to <file> (emptied past 1 MiB), retry on errors
+  synergy-tools audio receive [--buffer-ms N]
+                                        play a partner's sound (default buffer 20 ms)
+  synergy-tools audio unmute            undo the sender's auto-mute after it was killed
   synergy-tools --version";
 
 fn downloads() -> Result<PathBuf, String> {
@@ -132,6 +139,14 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
                 }
             })
         }
+        ["audio", "send", target] => audio::run_send(target)?,
+        ["audio", "send", target, "--log", path] => audio::run_send_logged(target, path)?,
+        ["audio", "receive"] => audio::run_receive(audio::DEFAULT_BUFFER_MS)?,
+        ["audio", "receive", "--buffer-ms", n] => match n.parse() {
+            Ok(n) if n > 0 => audio::run_receive(n)?,
+            _ => return Err(format!("--buffer-ms needs a positive integer, got {n:?}")),
+        },
+        ["audio", "unmute"] => audio::mute::restore(),
         _ => return Err(USAGE.into()),
     }
     Ok(())
