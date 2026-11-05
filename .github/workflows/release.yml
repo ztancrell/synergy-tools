@@ -64,8 +64,31 @@ jobs:
           name: windows
           path: synergy-audio-*-windows-x86_64.zip
 
+  macos:
+    needs: version-guard
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - name: Package
+        shell: bash
+        run: |
+          dir="synergy-audio-$GITHUB_REF_NAME"
+          mkdir "$dir"
+          lipo -create -output "$dir/synergy-audio" \
+            target/aarch64-apple-darwin/release/synergy-audio target/x86_64-apple-darwin/release/synergy-audio
+          cp README.md LICENSE "$dir/"
+          tar czf "$dir-macos-universal.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: synergy-audio-*-macos-universal.tar.gz
+
   release:
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

@@ -7,14 +7,16 @@ Shares audio between two machines that already share keyboard and mouse with Syn
 on the LAN; the other plays it on its default output, with a small jitter buffer for low
 latency.
 
-**Status: early (v0.2.0).** Windows → Linux only, terminal only (plus optional autostart:
-a systemd user service for the Linux receiver, a scheduled task for the Windows sender).
+**Status: early (v0.2.0).** Windows or macOS sender → Linux receiver, terminal only (plus
+optional autostart: a systemd user service for the Linux receiver, a scheduled task for the
+Windows sender; none for macOS yet). The macOS sender is built by CI but not in a tagged
+release yet.
 Prebuilt downloads on the [Releases page](https://github.com/ztancrell/synergy-audio/releases).
 No GUI, no Synergy integration, no switching direction, no self-update yet.
 
 ## Download and install
 
-You need a Windows PC (the one whose audio you want to hear) and a Linux PC with PipeWire
+You need a Windows PC or a Mac (the one whose audio you want to hear) and a Linux PC with PipeWire
 (the one with your headphones) on the same LAN. Both sound devices must run at 48 kHz.
 From the [Releases page](https://github.com/ztancrell/synergy-audio/releases), download
 the two archives of the newest release:
@@ -22,6 +24,8 @@ the two archives of the newest release:
 - `synergy-audio-vX.Y.Z-linux-x86_64.tar.gz` for the Linux PC (built on Ubuntu 22.04, runs
   on most current distros).
 - `synergy-audio-vX.Y.Z-windows-x86_64.zip` for the Windows PC (64-bit Windows 10/11).
+- `synergy-audio-vX.Y.Z-macos-universal.tar.gz` instead, if the sender is a Mac running macOS
+  (see [macOS (sender)](#macos-sender) below).
 
 **Linux (receiver), first:**
 
@@ -62,6 +66,26 @@ Optional: check the downloads against `SHA256SUMS` from the same release page:
 (compare by eye).
 
 To build from source instead, follow [Setup, step by step](#setup-step-by-step).
+
+### macOS (sender)
+
+Needs macOS 14.6 or newer (Apple Silicon or Intel: the binary is universal). The Mac's
+output device must run at 48 kHz (Audio MIDI Setup). Set up the Linux receiver as above,
+then in Terminal:
+
+```sh
+tar xf synergy-audio-vX.Y.Z-macos-universal.tar.gz
+cd synergy-audio-vX.Y.Z
+xattr -d com.apple.quarantine ./synergy-audio
+./synergy-audio send 192.168.1.20
+```
+
+The program is unsigned, so Gatekeeper blocks it without the `xattr` line. Alternatively,
+run it once, then allow it in System Settings → Privacy & Security → **Open Anyway**. On
+first run macOS asks for **System Audio Recording** permission (the prompt may name
+Terminal rather than synergy-audio); allow it, then run the command again if no audio
+arrives. Auto-mute and autostart are Windows/Linux only for now: on the Mac, mute or lower
+the speakers yourself, and start the sender by hand. Stop it with Ctrl+C.
 
 ## Author's setup
 
@@ -317,9 +341,10 @@ connection allows a smaller buffer and less delay.
   the keepalive's source address and port. Both sides must run the same version.
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
   acks are under 1.5 s old; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
-  the keepalive thread, never in the capture callback. On Linux the sender only reports
-  what Windows would do.
-- The sender captures the default output device (WASAPI loopback on Windows). More than
+  the keepalive thread, never in the capture callback. On macOS and Linux the sender only
+  reports what Windows would do.
+- The sender captures the default output device (WASAPI loopback on Windows, CoreAudio
+  loopback on macOS 14.6+). More than
   two channels: it sends only front left/right. Mono is copied to both channels.
 - The capture callback never sends on the network itself (a stalled send would make it miss
   the audio deadline). It puts packets in a queue of 20 packets (100 ms), and a separate
@@ -372,7 +397,7 @@ sends, then whether the receiver answers and the mute state, e.g.
 `send: 200 packets/s, queue-full dropped 0, send errors 0, receiver ok (ack 0.3 s ago), muted by us`
 or `send: 0 packets/s, queue-full dropped 0, send errors 4, receiver not heard (last ack 12 s ago), not muted`.
 The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
-failed: ...`, or on Linux `no muting on this OS (Windows would be muted)`. Send errors are
+failed: ...`, or on macOS and Linux `no muting on this OS (Windows would be muted)`. Send errors are
 normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate packets
 dropped, and trims. If underruns keep rising, raise `--buffer-ms`.
 
@@ -455,16 +480,21 @@ access the first time you run it, allow it on private networks.
 ## Releases and CI
 
 GitHub Actions run on every push and pull request (`.github/workflows/ci.yml`): `cargo
-test` and `cargo build --release` on Ubuntu 22.04 and Windows.
+test` and `cargo build --release` on Ubuntu 22.04, Windows and macOS (macOS also builds
+`x86_64-apple-darwin` and uploads it as the `macos-x86_64` workflow artifact, fetchable
+with `gh run download <run-id> -n macos-x86_64`).
 
 Pushing a tag `v*` runs `.github/workflows/release.yml`: it checks the tag matches the
-`version` in `Cargo.toml` (and fails otherwise), builds Linux on Ubuntu 22.04 and Windows
-with MSVC and a static C runtime (no VC++ redistributable needed), packages
+`version` in `Cargo.toml` (and fails otherwise), builds Linux on Ubuntu 22.04, Windows
+with MSVC and a static C runtime (no VC++ redistributable needed), and macOS for
+`aarch64-apple-darwin` and `x86_64-apple-darwin` joined with `lipo` into one universal
+binary, packages
 `synergy-audio-<tag>-linux-x86_64.tar.gz` (folder `synergy-audio-<tag>/` with the binary,
 `install-autostart.sh`, `uninstall-autostart.sh`, README, LICENSE) and
 `synergy-audio-<tag>-windows-x86_64.zip` (files at the zip root: `synergy-audio.exe`,
 `install-autostart.ps1`, `uninstall-autostart.ps1`, README, LICENSE; `update.ps1` is the
-author's dev tool and is left out), writes `SHA256SUMS`, and creates the GitHub release with
+author's dev tool and is left out) and `synergy-audio-<tag>-macos-universal.tar.gz` (folder
+`synergy-audio-<tag>/` with the binary, README, LICENSE), writes `SHA256SUMS`, and creates the GitHub release with
 generated notes.
 
 ### Making a release (maintainer)

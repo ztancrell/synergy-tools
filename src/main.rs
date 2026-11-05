@@ -201,7 +201,7 @@ fn config_48k(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
             format!(
                 "device '{device}' runs at {} Hz and can't do {RATE} Hz. \
                  Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
-                 Linux/PipeWire: default.clock.rate = 48000) and retry.",
+                 macOS: Audio MIDI Setup; Linux/PipeWire: default.clock.rate = 48000) and retry.",
                 def.sample_rate()
             )
         })
@@ -223,7 +223,8 @@ fn send(target: &str) -> Result<(), String> {
     // Same socket for keepalives, so the receiver's acks come back to it.
     let ka_sock = sock.try_clone().map_err(|e| e.to_string())?;
 
-    // On Windows (WASAPI) an input stream on an output device is loopback capture.
+    // On Windows (WASAPI) and macOS 14.6+ (CoreAudio) an input stream on an output device is
+    // loopback capture.
     let device = default_output()?;
     let sup = config_48k(&device)?;
     let config: StreamConfig = sup.config();
@@ -473,7 +474,7 @@ mod mute {
     }
 }
 
-/// Elsewhere (Linux sender, for testing) nothing is muted; report what Windows would do.
+/// Elsewhere (macOS sender, or Linux for testing) nothing is muted; report what Windows would do.
 #[cfg(not(windows))]
 mod mute {
     use super::{mute_action, MuteAction};
