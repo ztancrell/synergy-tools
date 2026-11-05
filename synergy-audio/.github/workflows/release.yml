@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match Cargo.toml version
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          echo "tag: $tag  Cargo.toml: $ver"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $ver. Bump Cargo.toml, commit, and tag v$ver."
+            exit 1
+          fi
+
+  linux:
+    needs: version-guard
+    runs-on: ubuntu-22.04  # older glibc, so the binary runs on most distros
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --release
+      - name: Package
+        shell: bash
+        run: |
+          dir="synergy-audio-$GITHUB_REF_NAME"
+          mkdir "$dir"
+          cp target/release/synergy-audio install-autostart.sh uninstall-autostart.sh README.md LICENSE "$dir/"
+          tar czf "$dir-linux-x86_64.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: synergy-audio-*-linux-x86_64.tar.gz
+
+  windows:
+    needs: version-guard
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        # Files at the zip root: Explorer's "Extract All" puts them in one folder named after the zip.
+        # update.ps1 is the author's dev tool (scp from his desktop), so it is left out.
+        run: |
+          $zip = "synergy-audio-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          Compress-Archive -DestinationPath $zip -Path target\release\synergy-audio.exe, install-autostart.ps1, uninstall-autostart.ps1, README.md, LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: synergy-audio-*-windows-x86_64.zip
+
+  macos:
+    needs: version-guard
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - name: Package
+        shell: bash
+        run: |
+          dir="synergy-audio-$GITHUB_REF_NAME"
+          mkdir "$dir"
+          lipo -create -output "$dir/synergy-audio" \
+            target/aarch64-apple-darwin/release/synergy-audio target/x86_64-apple-darwin/release/synergy-audio
+          cp README.md LICENSE "$dir/"
+          tar czf "$dir-macos-universal.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: synergy-audio-*-macos-universal.tar.gz
+
+  release:
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum synergy-audio-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" synergy-audio-* SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

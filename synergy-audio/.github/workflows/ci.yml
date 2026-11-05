@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      - run: cargo build --release
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test
+      - run: cargo build --release
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup target add x86_64-apple-darwin
+      - run: cargo test
+      - run: cargo build --release
+      - run: cargo build --release --target x86_64-apple-darwin  # the author's Intel Mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: target/x86_64-apple-darwin/release/synergy-audio
