@@ -6,7 +6,7 @@ on the LAN; the other plays it on its default output, with a small jitter buffer
 latency. The stream is encrypted and authenticated: the two machines are paired once with an
 8-digit code ([Pairing and encryption](#pairing-and-encryption)).
 
-**Status: early.** Part of `synergy-tools` (formerly the standalone synergy-audio): Windows
+**Status: early.** Part of `synergy-tools` (formerly the standalone synergy-audio): Windows or macOS
 sender → Linux receiver, from the tray ([In the tray](#in-the-tray)) or the terminal
 (`synergy-tools audio send|receive|unmute`). One pairing covers audio and files
 ([Pairing](#pairing-and-encryption)). Not compatible with the old synergy-audio binaries
@@ -22,7 +22,7 @@ sender stops the Linux side playing it within about 5 s.
 
 The tray menu's audio section:
 
-- `Audio: streaming to <name>` (Windows) / `Audio: receiving from <name>` (Linux),
+- `Audio: streaming to <name>` (Windows, macOS) / `Audio: receiving from <name>` (Linux),
   `Audio: waiting for partner`, `Audio: stopped` or `Audio: error: <message>`; refreshed every
   second. A failed start (no audio device, ...) is retried every 10 s. If UDP 24850 is busy on
   Linux (an old synergy-audio receiver or a headless `audio receive` still running), the line

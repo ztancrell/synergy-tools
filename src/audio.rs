@@ -426,9 +426,7 @@ fn config_48k(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
         .map_err(|e| e.to_string())?
         .filter(|c| c.sample_format() == def.sample_format())
         .find_map(|c| c.try_with_sample_rate(RATE))
-        .ok_or_else(|| {
-            rate_error(&device.to_string(), def.sample_rate())
-        })
+        .ok_or_else(|| rate_error(&device.to_string(), def.sample_rate()))
 }
 
 fn rate_error(device: &str, rate: u32) -> String {

@@ -76,9 +76,10 @@ Script Editor in System Settings → Notifications; allow them there if none app
   to send nothing; a new drop replaces the held files). With nobody online the notification says
   `not sent: no partner online` and nothing is sent. The title shows `Release to send`,
   `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing or
-  minimizing the window only hides it to the tray (macOS has no minimize button: see "macOS" above) (tray menu: Show drop window); it has no
-  taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
-  the window stays on top by itself.
+  minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
+  taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry
+  stays. On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. macOS has
+  no minimize button (see "macOS" above).
 - **Right-click:** the Send To entries (Windows Explorer, Thunar, Dolphin, Nautilus) come back
   with phase 3's installer. Until then use the drop window or `synergy-tools files send`.
   Superseded: they came from the removed install scripts.
