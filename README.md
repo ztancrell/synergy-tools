@@ -84,8 +84,9 @@ unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synerg
 - **Drop window:** a small window titled `Drop files to send` sits at the bottom-right of the
   screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox).
   Drag files onto it (from Explorer, Thunar, ...). The title shows `Release to send`,
-  `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing the
-  window only hides it (tray menu: Show drop window). On Windows and on Linux/X11 (e.g. Openbox)
+  `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing or
+  minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
+  taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
   the window stays on top by itself.
 - **Right-click:** Windows Explorer: right-click > Send to > Send to other PC. Thunar: right-click >
   Send To > Send to other PC. Dolphin and Nautilus have an entry too.

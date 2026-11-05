@@ -8,6 +8,10 @@ use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
+#[cfg(target_os = "linux")]
+use tao::platform::unix::WindowExtUnix as _;
+#[cfg(windows)]
+use tao::platform::windows::WindowExtWindows as _;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -22,6 +26,9 @@ const ERROR_FOR: Duration = Duration::from_secs(5);
 
 /// Messages from worker threads and the tray menu to the event loop.
 pub enum UserEvent {
+    /// The user minimized the drop window (Linux: GTK iconified).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Minimized,
     SendDone(usize, Result<String, String>),
     Listener(transfer::Event),
     /// The listener thread died: this app can't receive any more.
@@ -64,6 +71,18 @@ fn parse_uri_list(s: &str) -> Vec<PathBuf> {
             Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
         })
         .collect()
+}
+
+/// Minimize reaches the event loop as a user event.
+#[cfg(target_os = "linux")]
+fn gtk_minimized(window: &tao::window::Window, proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
+    use gtk::prelude::*;
+    window.gtk_window().connect_window_state_event(move |_, e| {
+        if e.new_window_state().contains(gtk::gdk::WindowState::ICONIFIED) {
+            let _ = proxy.send_event(UserEvent::Minimized);
+        }
+        gtk::glib::Propagation::Proceed
+    });
 }
 
 /// Wire GTK drag-and-drop onto the window; results reach the event loop as user events.
@@ -266,7 +285,10 @@ fn start() -> Result<(), String> {
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
     #[cfg(target_os = "linux")]
-    gtk_drop(&window, proxy.clone());
+    {
+        gtk_drop(&window, proxy.clone());
+        gtk_minimized(&window, proxy.clone());
+    }
     let (status, toggle, pair_item, quit) = (
         MenuItem::new(status_text(None), false, None),
         MenuItem::new("Hide drop window", true, None),
@@ -303,7 +325,12 @@ fn start() -> Result<(), String> {
                 }))
                 .unwrap_or_else(|_| Err("tray library missing (install libayatana-appindicator3-1)".into()));
                 match built {
-                    Ok(i) => tray = Some(i),
+                    Ok(i) => {
+                        tray = Some(i);
+                        // Tray-only app: no task list / taskbar entry. Without a tray the
+                        // window stays in it, so a minimized window can't become unreachable.
+                        let _ = window.set_skip_taskbar(true);
+                    }
                     Err(e) => notify::error(&format!("no tray icon, the drop window's close button now quits: {e}")),
                 }
             }
@@ -318,6 +345,15 @@ fn start() -> Result<(), String> {
                     visible = false;
                     toggle.set_text("Show drop window");
                 }
+                // Windows reports minimize as a 0x0 resize: hide to the tray instead.
+                WindowEvent::Resized(sz) if sz.width == 0 || sz.height == 0 => {
+                    if tray.is_some() {
+                        window.set_minimized(false);
+                        window.set_visible(false);
+                        visible = false;
+                        toggle.set_text("Show drop window");
+                    }
+                }
                 // Not user-resizable, so a resize is the WM/GTK settling the real size: re-place.
                 WindowEvent::Resized(_) => place(&window, target),
                 WindowEvent::HoveredFile(_) => t.hover = true,
@@ -328,6 +364,14 @@ fn start() -> Result<(), String> {
                 }
                 _ => {}
             },
+            Event::UserEvent(UserEvent::Minimized) => {
+                if tray.is_some() {
+                    window.set_minimized(false);
+                    window.set_visible(false);
+                    visible = false;
+                    toggle.set_text("Show drop window");
+                }
+            }
             Event::UserEvent(UserEvent::Hover(on)) => t.hover = on,
             Event::UserEvent(UserEvent::Dropped(files)) => {
                 t.hover = false;

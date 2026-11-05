@@ -82,6 +82,8 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
 - 2026-11-04: Received files go to Downloads, with a notification.
 - 2026-11-05: tao has no Linux file-drop events, so Linux uses GTK drag-and-drop directly
   (`text/uri-list` on the window); Windows keeps tao's events.
+- 2026-11-05: Minimize hides the drop window to the tray (no taskbar / tint2 entry); only if the
+  tray icon failed does it stay a normal minimize with a taskbar entry.
 - 2026-11-04: Pair once with a short code; refuse everyone else. (My call, user didn't
   object.)
 - 2026-11-04: No folders in v1; files up to ~100 MB.
