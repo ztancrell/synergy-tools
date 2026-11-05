@@ -22,3 +22,7 @@ To move the submodules to the latest commit of their tracked branch:
 ```sh
 git submodule update --remote
 ```
+
+A GitHub Actions bot (`.github/workflows/bump-submodules.yml`) does this every 15 minutes and
+commits any change, so the pointers here stay current on their own. Each tool builds and tests
+in its own repo's CI.
