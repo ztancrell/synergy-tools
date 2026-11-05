@@ -1,6 +1,7 @@
 // ponytail: items are used by later tasks; drop this allow once the CLI is wired up.
 #![allow(dead_code)]
 mod config;
+mod pair;
 mod proto;
 mod store;
 
