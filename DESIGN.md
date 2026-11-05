@@ -121,6 +121,10 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
   `synergy-dragndrop peer <address>` (or a fixed address in the router); (c) the Linux tray has
   no tooltip, so the status shows as the first (greyed) tray menu item.
 
+- 2026-11-05: Change of direction: synergy-dragndrop will be merged into synergy-audio as one
+  program (one binary, tray, pairing, installer). The merged design is still to be worked out;
+  this project stays as built until then.
+
 ## Open questions
 
 - (none)
