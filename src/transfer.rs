@@ -26,6 +26,8 @@ pub enum Event {
     Paired(String),
     Refused(IpAddr),
     Error(String),
+    /// A pairing attempt failed (as opposed to an unrelated connection).
+    PairFailed(String),
 }
 
 pub struct Listener {
@@ -80,12 +82,14 @@ pub fn send_files(peer: &Peer, paths: &[PathBuf]) -> Result<String, String> {
     let stream = connect(&peer.host).map_err(|e| format!("not sent: {e}"))?;
     let mut sess = Session::client(stream, &peer.secret)
         .map_err(|_| "not sent: the other PC refused (pairing doesn't match: pair again)".to_string())?;
-    if let Err(e) = send_batch(&mut sess, count, paths) {
-        // The receiver may have said why before it hung up.
-        return Err(match sess.recv() {
-            Ok(Msg::Fail(r)) => format!("not sent: {r}"),
-            _ => format!("not sent: {e}"),
-        });
+    if let Err((network, e)) = send_batch(&mut sess, count, paths) {
+        // Only a failed write can mean the receiver hung up with a reason; local errors have none pending.
+        if network {
+            if let Ok(Msg::Fail(r)) = sess.recv() {
+                return Err(format!("not sent: {r}"));
+            }
+        }
+        return Err(format!("not sent: {e}"));
     }
     match sess.recv() {
         Ok(Msg::Done { saved }) if saved == count => {
@@ -97,26 +101,28 @@ pub fn send_files(peer: &Peer, paths: &[PathBuf]) -> Result<String, String> {
     }
 }
 
-fn send_batch(sess: &mut Session<TcpStream>, count: u16, paths: &[PathBuf]) -> Result<(), String> {
-    sess.send(&Msg::Batch { count, from: trunc(&config::this_pc_name(), 200) })?;
+/// Err is (came from the network write, message).
+fn send_batch(sess: &mut Session<TcpStream>, count: u16, paths: &[PathBuf]) -> Result<(), (bool, String)> {
+    let (net, local) = (|e| (true, e), |e| (false, e));
+    sess.send(&Msg::Batch { count, from: trunc(&config::this_pc_name(), 1000) }).map_err(net)?;
     for p in paths {
         let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let f = std::fs::File::open(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
-        let size = f.metadata().map_err(|e| format!("cannot read {}: {e}", p.display()))?.len();
-        sess.send(&Msg::File { size, name: trunc(&name, 200) })?;
+        let f = std::fs::File::open(p).map_err(|e| local(format!("cannot read {}: {e}", p.display())))?;
+        let size = f.metadata().map_err(|e| local(format!("cannot read {}: {e}", p.display())))?.len();
+        sess.send(&Msg::File { size, name: name.clone() }).map_err(net)?;
         let (mut f, mut buf, mut sent) = (f.take(size), vec![0u8; CHUNK], 0u64);
         loop {
-            let n = f.read(&mut buf).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+            let n = f.read(&mut buf).map_err(|e| local(format!("cannot read {}: {e}", p.display())))?;
             if n == 0 {
                 break;
             }
-            sess.send(&Msg::Data(buf[..n].to_vec()))?;
+            sess.send(&Msg::Data(buf[..n].to_vec())).map_err(net)?;
             sent += n as u64;
         }
         if sent != size {
-            return Err(format!("{name} changed while sending"));
+            return Err(local(format!("{name} changed while sending")));
         }
-        sess.send(&Msg::End)?;
+        sess.send(&Msg::End).map_err(net)?;
     }
     Ok(())
 }
@@ -218,7 +224,7 @@ impl Listener {
                 });
                 on_event(match saved {
                     Ok(()) => Event::Paired(ip.to_string()),
-                    Err(e) => Event::Error(e),
+                    Err(e) => Event::PairFailed(e),
                 });
             }
             b'S' => {
@@ -336,6 +342,17 @@ mod tests {
         let e = send_files(&peer_for(p, [4; 32]), &[src.join("a")]).unwrap_err();
         assert!(e.starts_with("not sent: ") && !e.contains("refused"), "{e}");
         assert!(h.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn local_read_error_returns_at_once() {
+        let src = tmp();
+        std::fs::write(src.join("a"), b"a").unwrap();
+        let (p, _h) = serve([8; 32], tmp());
+        let t = Instant::now();
+        let e = send_files(&peer_for(p, [8; 32]), &[src.join("a"), src.join("gone")]).unwrap_err();
+        assert!(e.starts_with("not sent: cannot read") && e.contains("gone"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     }
 
     #[test]

@@ -45,12 +45,12 @@ fn show(e: &Event) -> String {
         }
         Event::Paired(ip) => format!("Paired with {ip}."),
         Event::Refused(ip) => format!("refused connection from {ip}: not the paired PC"),
-        Event::Error(e) => e.clone(),
+        Event::Error(e) | Event::PairFailed(e) => e.clone(),
     }
 }
 
 fn pair_host() -> Result<(), String> {
-    let l = Listener::bind(PORT, downloads().unwrap_or_default())?;
+    let l = Listener::bind(PORT, downloads()?)?;
     let code = pair::new_code();
     println!("Pairing code: {}", pair::show_code(&code));
     println!("On the other PC run:  synergy-dragndrop pair {} {}", local_address(), pair::show_code(&code));
@@ -65,8 +65,8 @@ fn pair_host() -> Result<(), String> {
         println!("{}", show(&e));
         match e {
             Event::Paired(_) => std::process::exit(0),
-            // The code is spent once an attempt has started; stray connections don't end the wait.
-            Event::Error(_) if pairing.lock().unwrap().is_none() => std::process::exit(1),
+            // Only a failed pairing attempt ends the wait; stray connections don't.
+            Event::PairFailed(_) => std::process::exit(1),
             _ => {}
         }
     })
@@ -88,7 +88,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("The paired PC is now at {host}.");
         }
         ["unpair"] => println!("{}", if config::remove_peer()? { "Unpaired." } else { "Not paired." }),
-        ["send", ..] => {
+        ["send", _, ..] => {
             let paths: Vec<PathBuf> = args[1..].iter().map(PathBuf::from).collect();
             transfer::check_files(&paths)?;
             println!("{}", transfer::send_files(&config::load_peer()?, &paths)?);
