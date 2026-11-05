@@ -61,7 +61,7 @@ command has finished, and `$LASTEXITCODE` is unreliable. Every example below the
 Pair once; the pairing is remembered on both PCs. The two PCs must reach each other on TCP port
 **24851** (the installers open it).
 
-1. On PC 1 either use the tray menu **Pair...** (the code shows in the drop window's title and in a
+1. On PC 1 either use the tray menu **Pair…** (the code shows in the drop window's title and in a
    notification, with the command for the other PC) or run `synergy-dragndrop pair`. It prints a
    code like `1234-5678` and the command to run on the other PC. The code works for one attempt
    and expires after 2 minutes.
@@ -79,7 +79,7 @@ unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synerg
 - **Drop window:** a small window titled `Drop files to send` sits at the bottom-right of the
   screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox).
   Drag files onto it (from Explorer, Thunar, ...). The title shows `Release to send`,
-  `Sending 2 files...`, then `Sent` or `Not sent`, and a notification gives the result. Closing the
+  `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing the
   window only hides it (tray menu: Show drop window). On Windows and on Linux/X11 (e.g. Openbox)
   the window stays on top by itself.
 - **Right-click:** Windows Explorer: right-click > Send to > Send to other PC. Thunar: right-click >
@@ -88,7 +88,7 @@ unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synerg
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status, `Paired with <host>` or `Not paired` (the hover tooltip with the same text
   works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
-  `Pair...`, `Quit`. If the tray icon can't be created (library missing), a notification says so
+  `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
   exits. Starting a second copy fails with a notification, since the first one holds port 24851.
   On Linux the icon uses libappindicator (`libayatana-appindicator3`, with a fallback to an XEmbed
@@ -149,7 +149,7 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: unpair and pair again.
 - **`port 24851 is busy: synergy-dragndrop is probably already running`**: the tray app holds the
-  port. Use its tray menu **Pair...** or quit it before running `pair` or `listen` in a terminal.
+  port. Use its tray menu **Pair…** or quit it before running `pair` or `listen` in a terminal.
 - **Windows shows "Windows protected your PC" (SmartScreen)** for a received `.exe`: click **More
   info > Run anyway**. That is the Mark of the Web at work; the program adds no dialog of its own.
 - **No terminal output on Windows**: add `| Out-Host` (see above).

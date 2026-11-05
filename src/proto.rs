@@ -49,12 +49,12 @@ pub enum Msg {
 impl Msg {
     pub fn encode(&self) -> Vec<u8> {
         match self {
-            Msg::Batch { count, from } => [&[b'B'][..], &count.to_be_bytes(), from.as_bytes()].concat(),
-            Msg::File { size, name } => [&[b'F'][..], &size.to_be_bytes(), name.as_bytes()].concat(),
-            Msg::Data(d) => [&[b'D'][..], d].concat(),
+            Msg::Batch { count, from } => [&b"B"[..], &count.to_be_bytes(), from.as_bytes()].concat(),
+            Msg::File { size, name } => [&b"F"[..], &size.to_be_bytes(), name.as_bytes()].concat(),
+            Msg::Data(d) => [&b"D"[..], d].concat(),
             Msg::End => vec![b'E'],
-            Msg::Done { saved } => [&[b'K'][..], &saved.to_be_bytes()].concat(),
-            Msg::Fail(r) => [&[b'X'][..], r.as_bytes()].concat(),
+            Msg::Done { saved } => [&b"K"[..], &saved.to_be_bytes()].concat(),
+            Msg::Fail(r) => [&b"X"[..], r.as_bytes()].concat(),
         }
     }
 
@@ -152,7 +152,7 @@ mod tests {
         assert!(Msg::decode(&[]).is_err());
         assert!(Msg::decode(b"F\x00").is_err());
         assert!(Msg::decode(b"Z").is_err());
-        assert!(Msg::decode(&[&[b'D'][..], &vec![0; CHUNK + 1]].concat()).is_err());
+        assert!(Msg::decode(&[&b"D"[..], &vec![0; CHUNK + 1]].concat()).is_err());
         assert!(Msg::decode(b"B\x00").is_err());
         assert!(Msg::decode(b"K\x00").is_err());
         assert!(Msg::decode(b"Ex").is_err());
