@@ -5,12 +5,14 @@
 Shares audio between two machines that already share keyboard and mouse with Synergy 3
 (which carries no audio). One machine captures everything it plays and streams it over UDP
 on the LAN; the other plays it on its default output, with a small jitter buffer for low
-latency.
+latency. The stream is encrypted and authenticated: the two machines are paired once with an
+8-digit code ([Pairing and encryption](#pairing-and-encryption)).
 
 **Status: early (v0.2.0).** Windows or macOS sender → Linux receiver, terminal only (plus
 optional autostart: a systemd user service for the Linux receiver, a scheduled task for the
 Windows sender; none for macOS yet). The macOS sender is built by CI but not in a tagged
-release yet.
+release yet. Encryption and pairing are newer than v0.2.0 and incompatible with it: update both
+machines together.
 Prebuilt downloads on the [Releases page](https://github.com/ztancrell/synergy-audio/releases).
 No GUI, no Synergy integration, no switching direction, no self-update yet.
 
@@ -39,7 +41,9 @@ It copies the bundled program to `~/.local/bin/synergy-audio` and installs a sys
 service that starts the receiver at every login (details: steps 13-17 below). If ufw or
 firewalld is active and UDP 24850 isn't open yet, it opens it and asks for your sudo
 password for that only. Note the Linux PC's LAN address (`ip -4 addr`, e.g.
-`192.168.1.20`).
+`192.168.1.20`). If no sender is paired yet, it then shows a pairing code like `1234-5678`
+and waits up to 2 minutes for the sender: leave it waiting and do the Windows (or macOS)
+part now.
 
 **Windows (sender):** right-click the zip → **Extract All**, open the extracted folder,
 click in the address bar, type `powershell` and press Enter. Then, with your Linux PC's
@@ -49,7 +53,9 @@ address:
 powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 -Desktop 192.168.1.20
 ```
 
-Always pass `-Desktop`: without it the sender goes to the author's address. It copies the
+Always pass `-Desktop`: without it the sender goes to the author's address. If this PC isn't
+paired yet, it asks for the pairing code the Linux PC shows; type it (with or without the
+dash). It copies the
 program to `%LOCALAPPDATA%\synergy-audio` and starts it at every login, hidden (details:
 steps 19-23 below). If Windows shows "Windows protected your PC" when you run
 `synergy-audio.exe` yourself (the program is unsigned), click **More info → Run anyway**.
@@ -59,7 +65,9 @@ Play something on Windows: it should come out of the Linux PC, and the Windows s
 mute while it does ([Auto-mute](#auto-mute-of-the-macs-speakers)). To check, see steps
 14 and 20 below. To remove: `./uninstall-autostart.sh` on Linux,
 `powershell -ExecutionPolicy Bypass -File .\uninstall-autostart.ps1` on Windows.
-To update: download the new release and run the same install commands again.
+To update: download the new release and run the same install commands again (the pairing
+is kept, so no new code is asked). Coming from v0.2.0 or older (no encryption): update both
+machines, the old and new versions can't talk to each other.
 
 Optional: check the downloads against `SHA256SUMS` from the same release page:
 `sha256sum -c --ignore-missing SHA256SUMS` on Linux, `Get-FileHash <file>` on Windows
@@ -77,8 +85,14 @@ then in Terminal:
 tar xf synergy-audio-vX.Y.Z-macos-universal.tar.gz
 cd synergy-audio-vX.Y.Z
 xattr -d com.apple.quarantine ./synergy-audio
+./synergy-audio pair 192.168.1.20 1234-5678   # once, with the code the Linux PC shows
 ./synergy-audio send 192.168.1.20
 ```
+
+The Linux PC shows the code while `install-autostart.sh` waits for a sender. If it is
+already installed and paired with another sender, pair this one too: on Linux run
+`systemctl --user stop synergy-audio && ~/.local/bin/synergy-audio pair`, then the `pair`
+line above on the Mac, then `systemctl --user start synergy-audio`.
 
 The program is unsigned, so Gatekeeper blocks it without the `xattr` line. Alternatively,
 run it once, then allow it in System Settings → Privacy & Security → **Open Anyway**. On
@@ -140,9 +154,9 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 ### First run (manual)
 
-5. On Linux, build and start the receiver:
+5. On Linux, build:
    ```sh
-   cd ~/projects/synergy-audio && cargo run --release -- receive
+   cd ~/projects/synergy-audio && cargo build --release
    ```
 6. On Windows, open PowerShell and go to your Downloads folder (not `C:\Windows\system32`,
    where an admin PowerShell starts):
@@ -156,7 +170,21 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
    ```
    The first time, it asks whether to trust the host key: type `yes`. Then enter your Linux
    password.
-8. Start the sender, pointing at the Linux machine's IP:
+8. Pair the two machines (once; see [Pairing and encryption](#pairing-and-encryption)).
+   On Linux, this shows a code like `1234-5678` and waits up to 2 minutes:
+   ```sh
+   target/release/synergy-audio pair
+   ```
+   On Windows, with that code:
+   ```
+   .\synergy-audio.exe pair 192.168.254.90 1234-5678
+   ```
+   Both sides say `Paired`. A wrong code fails on both sides; run `pair` on Linux again for
+   a new code. Then start the receiver on Linux and the sender on Windows, pointing at the
+   Linux machine's IP:
+   ```sh
+   target/release/synergy-audio receive
+   ```
    ```
    .\synergy-audio.exe send 192.168.254.90
    ```
@@ -204,7 +232,9 @@ journal instead of a terminal.
     40`), enables and starts it. A receiver you started by hand in a terminal holds the
     audio port, so the script stops it (it says so). If ufw (or firewalld) is active and
     UDP 24850 isn't open yet, it opens it and **asks for your sudo password** for that only;
-    if the port is already open it doesn't ask. For another buffer:
+    if the port is already open it doesn't ask. If no sender is paired yet (step 8 not
+    done), it runs `synergy-audio pair` before starting the service and waits for the
+    sender's `pair` command. For another buffer:
     `./install-autostart.sh --buffer-ms 60`. Rerunning without `--buffer-ms` keeps the
     installed value.
 14. Check it's running:
@@ -216,8 +246,8 @@ journal instead of a terminal.
     ```sh
     journalctl --user -u synergy-audio -f -o cat
     ```
-    Play something on Windows: you should see `receive: audio arriving from ...` and then
-    the 5-second status lines.
+    Once the sender runs you should see `receive: encrypted session with sender ... at ...`
+    and the 5-second status lines (packets/s above 0 while something plays).
 15. Reboot and log in: the receiver is running again by itself (check as in step 14).
 16. Updates now: run step 11 as before (`./dev.sh`, no need to stop anything first). It
     sees the service, builds both versions, copies the new program to `~/.local/bin`,
@@ -254,7 +284,9 @@ hand (step 11, or `cargo run --release -- receive`).
     It copies `synergy-audio.exe` to `C:\Users\bootcamp\AppData\Local\synergy-audio\`
     (`$env:LOCALAPPDATA\synergy-audio`), registers a Task Scheduler task named
     `synergy-audio` that runs it 10 s after you log in (only while you're logged on, so it
-    can capture your audio), and starts it right away. To send to another IP:
+    can capture your audio), and starts it right away. If Windows isn't paired yet (step 8
+    not done), it first asks for the code that `synergy-audio pair` shows on Linux. To send
+    to another IP:
     `.\install-autostart.ps1 -Desktop 192.168.1.20`. If it fails with "Access is denied",
     open PowerShell as administrator (right-click → **Run as administrator**), `cd` to
     `C:\Users\bootcamp\Downloads`, and run the same command again.
@@ -290,7 +322,8 @@ by itself, but only while the Linux receiver is actually receiving**, so you nev
 with no sound anywhere. Nothing to set up:
 
 - Every 500 ms the sender sends a small keepalive; the receiver answers each one with an
-  ack. While the last ack is less than 1.5 s old, the sender keeps the Windows default
+  ack. Both are encrypted and authenticated, so nobody else on the LAN can fake acks to
+  mute your speakers. While the last ack is less than 1.5 s old, the sender keeps the Windows default
   speakers muted (the taskbar speaker icon shows muted). When acks stop (receiver closed,
   network down), it unmutes them within about 2 s.
 - **Your own mute is respected:** if the speakers are already muted when the sender would
@@ -333,12 +366,24 @@ connection allows a smaller buffer and less delay.
 
 - Format: uncompressed 16-bit (i16) stereo, 48 kHz. Both devices must run at 48 kHz (no
   resampling); otherwise it exits with an error that says how to change the rate.
-- One UDP audio packet = 8-byte sequence number (u64, little-endian) + 5 ms of audio
-  (240 frames = 960 bytes). Packets that arrive late or twice are dropped.
-- Control packets are exactly 4 bytes, a length no audio packet can have (audio is 8 bytes
-  plus whole 4-byte stereo frames): keepalive `SAka` (ASCII), sent by the sender every
-  500 ms on the same socket as the audio, and ack `SAak`, which the receiver sends back to
-  the keepalive's source address and port. Both sides must run the same version.
+- Session: when the sender starts (and again whenever it has had no ack for 3 s, e.g. the
+  receiver restarted) it does a Noise handshake, `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`
+  (`snow` crate) with the pairing secret as the PSK: hello = `SAh1` + its 8-byte peer id
+  (cleartext, so the receiver can pick the secret) + Noise message 1; reply = `SAh2` +
+  message 2. The receiver accepts a new handshake at any time but keeps the running session
+  until a packet authenticates under the new one, so a replayed old hello changes nothing.
+- After the handshake every packet, both ways, is `D` + 8-byte nonce (u64, little-endian) +
+  ChaCha20-Poly1305 ciphertext + 16-byte tag. Audio: nonce = sequence number, payload =
+  5 ms of audio (240 frames = 960 bytes), 985 bytes in all. Keepalive (sender, every
+  500 ms, same socket as the audio): nonce with the top bit set, empty payload. Ack
+  (receiver, back to the keepalive's source address and port): its own counter, empty
+  payload. Per session and type the nonce must grow: late, duplicate and replayed packets
+  are dropped (`late/dup dropped`). Anything that doesn't authenticate (unknown peer id,
+  bad tag, wrong length, an old version's packet) is dropped and only counted (`rejected`);
+  it never reaches playback or the mute logic. Both sides must run the same version.
+- Superseded: up to v0.2.0 packets were plaintext and unauthenticated (audio = 8-byte
+  sequence number + samples, keepalive `SAka`, ack `SAak`). The current format is the one above (also at the top of
+  `src/main.rs`).
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
   acks are under 1.5 s old; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
   the keepalive thread, never in the capture callback. On macOS and Linux the sender only
@@ -354,6 +399,43 @@ connection allows a smaller buffer and less delay.
   grows past the target plus max(target, 10 ms), it drops the oldest audio to get back to the
   target (a "trim").
 
+## Pairing and encryption
+
+Pairing, once per sender/receiver pair, terminal only:
+
+```sh
+synergy-audio pair                             # on the receiver: prints a code like 1234-5678
+synergy-audio pair 192.168.1.20 1234-5678      # on the sender, within 2 minutes
+synergy-audio unpair                           # deletes all pairing files on this machine
+```
+
+`pair` on the receiver needs UDP 24850, so stop the receiver first (`systemctl --user stop
+synergy-audio`, or Ctrl+C); it says so if the port is busy. It takes exactly one attempt:
+with a wrong code both sides report `wrong code` and exit; run it again for a new code. The
+code never crosses the network: the two sides run SPAKE2 (`spake2` crate, Ed25519) with it
+and confirm the result both ways, so someone listening can't guess it offline, and someone
+interfering gets one guess in 100 million. Pairing gives both sides a 32-byte secret, plus
+an 8-byte id for the sender. The receiver can have several paired senders (one file each;
+restart the receiver after pairing a new one), but plays one at a time: two senders running
+at once would take turns. The sender keeps one receiver; pairing again replaces it. `send`
+and `receive` without a pairing exit with a message that points at `synergy-audio pair`.
+
+Pairing files (unix: mode 0600, readable only by you):
+
+- Linux: `$XDG_CONFIG_HOME/synergy-audio/` or `~/.config/synergy-audio/`
+- macOS: `~/Library/Application Support/synergy-audio/`
+- Windows: `%APPDATA%\synergy-audio\` (the program and log stay in `%LOCALAPPDATA%`)
+
+with `receiver` on a sender (`<host> <peer id> <secret>`, hex) and `senders/<peer id>` on a
+receiver (the secret, hex).
+
+What it protects against: other devices on the LAN can't play audio through your receiver,
+can't listen to the stream, can't fake acks to mute (or unmute) the sender's speakers, and
+can't replay recorded packets. What it doesn't: anyone on the network still sees that
+audio flows, when and how much, and can block or flood it; and anyone who can read the
+pairing files on either machine can impersonate it (unpair and pair again if that
+happens). Versions with encryption can't talk to v0.2.0 or older: update both machines.
+
 ## Build
 
 ```sh
@@ -365,7 +447,8 @@ cargo build --release --target x86_64-pc-windows-gnu    # target/x86_64-pc-windo
 
 ## Run
 
-On Linux (the machine that plays the audio):
+Pair first ([Pairing and encryption](#pairing-and-encryption)). On Linux (the machine that
+plays the audio):
 
 ```sh
 synergy-audio receive                  # listens on UDP 0.0.0.0:24850, 20 ms buffer
@@ -393,13 +476,16 @@ Scheduler opens for it closes at once (a brief flash at most). Stop it with Task
 
 Both sides print status to stderr (or the `--log` file) every 5 s. The sender prints packets/s, which should be
 about 200, plus running totals of packets dropped because the queue was full and of failed
-sends, then whether the receiver answers and the mute state, e.g.
-`send: 200 packets/s, queue-full dropped 0, send errors 0, receiver ok (ack 0.3 s ago), muted by us`
-or `send: 0 packets/s, queue-full dropped 0, send errors 4, receiver not heard (last ack 12 s ago), not muted`.
+sends and of received packets that failed to authenticate (`rejected`), then whether the
+receiver answers and the mute state, e.g.
+`send: 200 packets/s, queue-full dropped 0, send errors 0, rejected 0, receiver ok (ack 0.3 s ago), muted by us`
+or `send: 0 packets/s, queue-full dropped 0, send errors 4, rejected 0, receiver not heard (last ack 12 s ago), not muted`.
+Until the handshake is done (`send: encrypted session with the receiver started`) it sends
+no audio, so packets/s stays 0.
 The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
 failed: ...`, or on macOS and Linux `no muting on this OS (Windows would be muted)`. Send errors are
-normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate packets
-dropped, and trims. If underruns keep rising, raise `--buffer-ms`.
+normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate/replayed packets
+dropped, packets rejected (failed to authenticate), and trims. If underruns keep rising, raise `--buffer-ms`.
 
 ## Dev scripts
 
@@ -428,7 +514,8 @@ the old one runs), writes the user unit `~/.config/systemd/user/synergy-audio.se
 `ExecStart=%h/.local/bin/synergy-audio receive --buffer-ms N`, `Restart=on-failure`,
 `RestartSec=3`, `WantedBy=default.target`; N defaults to the installed value, else 40),
 stops receivers started by hand, opens UDP 24850 in ufw or firewalld if active and not open
-yet (with sudo), then `daemon-reload`, `enable` and `restart`, and prints the status.
+yet (with sudo), runs `synergy-audio pair` if `${XDG_CONFIG_HOME:-~/.config}/synergy-audio/senders/`
+is empty (stopping the service first), then `daemon-reload`, `enable` and `restart`, and prints the status.
 `uninstall-autostart.sh` disables and stops the service and removes the unit, keeping the
 binary and the firewall rule (it prints how to remove them).
 
@@ -459,7 +546,9 @@ restarts the task (on the old build if the copy failed) and shows the log's last
 `synergy-audio` (removing the downloaded-file mark with `Unblock-File`): at logon of the current user (10 s delay), interactive (runs only while
 logged on, in your session), action `synergy-audio.exe send <host> --log
 $env:LOCALAPPDATA\synergy-audio\synergy-audio.log`, no time limit, runs on battery, restart
-every minute on failure; then starts it. `uninstall-autostart.ps1` stops and removes the
+every minute on failure; then starts it. Before that, if `%APPDATA%\synergy-audio\receiver`
+doesn't exist, it asks for the pairing code and runs `synergy-audio.exe pair <host> <code>`
+(stopping if that fails). `uninstall-autostart.ps1` stops and removes the
 task, stops any running `synergy-audio.exe` and runs `synergy-audio.exe unmute`, keeping
 the folder. Fetch both once with
 `scp` (setup step 18).

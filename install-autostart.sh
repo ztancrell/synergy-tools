@@ -4,6 +4,8 @@
 # Installs the synergy-audio binary next to this script (release tarball), else builds it
 # from source (repo checkout), copies it to ~/.local/bin, writes the unit, (re)starts it, and
 # opens UDP 24850 in ufw/firewalld if needed (only that asks for your sudo password).
+# If no sender is paired yet it runs `synergy-audio pair` first (shows a code to type on the
+# sender), since the receiver refuses to start unpaired.
 # Rerun to reinstall or update; dev.sh does that for you when the service is installed.
 # Usage: ./install-autostart.sh [--buffer-ms N]   (default: keep the installed value, else 40)
 set -euo pipefail
@@ -72,6 +74,13 @@ for pid in $(pgrep -f "(^|/)$name receive" || true); do
     fi
 done
 
+# The receiver won't start without a paired sender: pair now if there is none (needs the port free).
+senders="${XDG_CONFIG_HOME:-$HOME/.config}/$name/senders"
+if [ -z "$(ls -A "$senders" 2>/dev/null)" ]; then
+    systemctl --user stop "$name" 2>/dev/null || true
+    pair_now=1
+fi
+
 # Firewall: open UDP $port only if it isn't open yet (the checks need no sudo).
 if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf; then
     if ! grep -qsE "^### tuple ### allow (udp|any) $port " /etc/ufw/user.rules; then
@@ -86,6 +95,15 @@ elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1;
     fi
 else
     echo "No active ufw/firewalld found; not touching the firewall."
+fi
+
+if [ -n "${pair_now:-}" ]; then
+    echo ""
+    echo "No sender paired yet. Pairing now: on the sender run"
+    echo "  synergy-audio pair <this machine's address> <the code below>"
+    echo "(install-autostart.ps1 on Windows asks for the code)."
+    "$bin" pair || { echo "Pairing failed; rerun $0 to try again." >&2; exit 1; }
+    echo ""
 fi
 
 systemctl --user daemon-reload

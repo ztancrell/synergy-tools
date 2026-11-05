@@ -1,6 +1,8 @@
 # Start the sender automatically at every Windows login, hidden, logging to a file.
 # Registers a Task Scheduler task "synergy-audio" for the current user (runs only while
 # you are logged on, in your session, so it can capture your audio). Rerun to reinstall.
+# If this PC isn't paired with the receiver yet, it asks for the code that
+# `synergy-audio pair` shows on the receiver and pairs first.
 # Run (in the folder that holds synergy-audio.exe):
 #   powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1 [-Desktop host]
 # ASCII only: Windows PowerShell 5.1 reads BOM-less scripts as ANSI.
@@ -29,6 +31,18 @@ Start-Sleep -Seconds 1
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Copy-Item -LiteralPath $src -Destination $exe -Force
 Unblock-File -LiteralPath $exe  # drop the downloaded-from-internet mark a release zip leaves
+
+# The sender won't start without a pairing: pair now if there is none.
+if (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA "synergy-audio\receiver"))) {
+    Write-Host "Not paired with the receiver yet. On the Linux PC run 'synergy-audio pair'"
+    Write-Host "(install-autostart.sh there does it when no sender is paired) and type the code it shows."
+    $code = Read-Host "Pairing code"
+    & $exe pair $Desktop $code
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Pairing failed; rerun this script to try again."
+        exit 1
+    }
+}
 
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 # The exe detaches from its console when given --log, so no window stays open.

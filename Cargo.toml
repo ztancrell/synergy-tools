@@ -6,6 +6,12 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 cpal = "0.18"
+# Pairing (SPAKE2) and encrypted sessions (Noise NNpsk0). getrandom and sha2 are the
+# versions snow/spake2 already pull in; snow without "std" so it doesn't pull in ring.
+snow = { version = "0.10", default-features = false, features = ["default-resolver-crypto"] }
+spake2 = "0.4"
+getrandom = "0.3"
+sha2 = "0.10"
 
 # Auto-mute of the Windows speakers (same version cpal already pulls in).
 [target.'cfg(windows)'.dependencies]
