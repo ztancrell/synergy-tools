@@ -377,17 +377,23 @@ connection allows a smaller buffer and less delay.
 - After the handshake every packet, both ways, is `D` + 8-byte nonce (u64, little-endian) +
   ChaCha20-Poly1305 ciphertext + 16-byte tag. Audio: nonce = sequence number, payload =
   5 ms of audio (240 frames = 960 bytes), 985 bytes in all. Keepalive (sender, every
-  500 ms, same socket as the audio): nonce with the top bit set, empty payload. Ack
-  (receiver, back to the keepalive's source address and port): its own counter, empty
-  payload. Per session and type the nonce must grow: late, duplicate and replayed packets
+  500 ms, same socket as the audio): nonce with the top bit set. Ack (receiver, back to the
+  keepalive's source address and port): its own counter. Keepalive and ack both carry the
+  9-byte stop control: 1 byte stopped (0 or 1) + 8-byte epoch (u64, little-endian); any other
+  payload is rejected. Each side merges the other's into its own (last writer wins: the
+  higher epoch wins, and on a tie stopped wins) and answers with its own; every stop or
+  resume adds 1 to the epoch. While stopped the sender drops captured audio, the receiver
+  discards any that arrives and empties its buffer, and the sender doesn't mute. The CLI never
+  stops (it has no stop command); stop is not saved across restarts. Per session and type the nonce must grow: late, duplicate and replayed packets
   are dropped (`late/dup dropped`). Anything that doesn't authenticate (unknown peer id,
   bad tag, wrong length, an old version's packet) is dropped and only counted (`rejected`);
   it never reaches playback or the mute logic. Both sides must run the same version.
 - Superseded: up to v0.2.0 packets were plaintext and unauthenticated (audio = 8-byte
   sequence number + samples, keepalive `SAka`, ack `SAak`). The current format is the one above (also at the top of
-  `src/main.rs`).
+  `src/main.rs`). Superseded: before the stop control, keepalive and ack payloads were empty.
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
-  acks are under 1.5 s old; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
+  acks are under 1.5 s old, the stream isn't stopped and auto-mute is on (always on in the
+  CLI); it unmutes when any of that ends, and when `send` is told to quit; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
   the keepalive thread, never in the capture callback. On macOS and Linux the sender only
   reports what Windows would do.
 - The sender captures the default output device (WASAPI loopback on Windows, CoreAudio
