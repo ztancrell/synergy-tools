@@ -29,6 +29,7 @@ fn downloads() -> Result<PathBuf, String> {
 
 fn show(e: &Event) -> String {
     match e {
+        Event::Receiving(from) => format!("receiving from {from}"),
         Event::Received(r) => {
             let names: Vec<_> = r.files.iter().map(|f| f.display().to_string()).collect();
             let n = names.len();

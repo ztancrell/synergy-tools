@@ -24,6 +24,8 @@ const ERROR_FOR: Duration = Duration::from_secs(5);
 pub enum UserEvent {
     SendDone(usize, Result<String, String>),
     Listener(transfer::Event),
+    /// The listener thread died: this app can't receive any more.
+    Fatal(String),
     Menu(MenuId),
 }
 
@@ -122,6 +124,29 @@ fn place<T>(window: &tao::window::Window, event_loop: &tao::event_loop::EventLoo
     }
 }
 
+/// Precedence: error over unpaired over busy over idle.
+fn tray_state(paired: bool, error_active: bool, busy: bool) -> TrayState {
+    if error_active {
+        TrayState::Error
+    } else if !paired {
+        TrayState::Unpaired
+    } else if busy {
+        TrayState::Busy
+    } else {
+        TrayState::Idle
+    }
+}
+
+fn status_text(paired: Option<&str>) -> String {
+    match paired {
+        Some(h) => format!("Paired with {h}"),
+        None => "Not paired".into(),
+    }
+}
+
+/// How often the peer file is re-read, so an `unpair` from a terminal shows up.
+const PEER_CHECK: Duration = Duration::from_secs(10);
+
 fn tray_icon_for(s: TrayState) -> Icon {
     Icon::from_rgba(icon_rgba(s), 32, 32).expect("32x32 RGBA")
 }
@@ -133,10 +158,15 @@ fn tooltip(paired: Option<&str>) -> String {
     }
 }
 
+/// A tray app started at login has no visible stderr: failures also go to a notification.
 pub fn run() -> Result<(), String> {
+    start().inspect_err(|e| notify::error(e))
+}
+
+fn start() -> Result<(), String> {
     // Single instance: the port is the lock.
     let dir = dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())?;
-    let listener = transfer::Listener::bind(crate::PORT, dir).inspect_err(|e| notify::error(e))?;
+    let listener = transfer::Listener::bind(crate::PORT, dir)?;
     let pairing = listener.pairing.clone();
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -144,9 +174,19 @@ pub fn run() -> Result<(), String> {
     {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            listener.run(move |e| {
-                let _ = proxy.send_event(UserEvent::Listener(e));
-            })
+            let p2 = proxy.clone();
+            // `run` never returns; a panic here would otherwise leave a healthy-looking tray.
+            let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                listener.run(move |e| {
+                    let _ = p2.send_event(UserEvent::Listener(e));
+                })
+            }));
+            let Err(p) = died else { return };
+            let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
+            let _ = proxy.send_event(UserEvent::Fatal(format!(
+                "the receiver stopped: {}",
+                msg.unwrap_or_else(|| "unknown error".into())
+            )));
         });
     }
     {
@@ -162,13 +202,14 @@ pub fn run() -> Result<(), String> {
         .with_always_on_top(true)
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
-    let (toggle, pair_item, quit) = (
+    let (status, toggle, pair_item, quit) = (
+        MenuItem::new(status_text(None), false, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
         MenuItem::new("Quit", true, None),
     );
     let menu = Menu::new();
-    menu.append_items(&[&toggle, &pair_item, &quit]).map_err(|e| format!("can't build the tray menu: {e}"))?;
+    menu.append_items(&[&status, &toggle, &pair_item, &quit]).map_err(|e| format!("can't build the tray menu: {e}"))?;
     let mut tray: Option<TrayIcon> = None;
     let mut pending: Vec<PathBuf> = Vec::new();
     let mut t = Tracker::default();
@@ -176,6 +217,9 @@ pub fn run() -> Result<(), String> {
     let mut error_until: Option<Instant> = None;
     // Pairing code shown in the title until it expires.
     let mut code: Option<(String, Instant)> = None;
+    let mut receiving = 0usize;
+    let mut peer: Option<String> = None;
+    let mut next_peer_check = Instant::now();
     let mut visible = true;
     let mut shown = title_for(&DropState::Idle);
     let mut shown_tray: Option<(TrayState, Option<String>)> = None;
@@ -184,12 +228,26 @@ pub fn run() -> Result<(), String> {
         match event {
             // The tray must be created once the loop runs (GTK main thread).
             Event::NewEvents(StartCause::Init) => {
-                match TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_icon(tray_icon_for(TrayState::Unpaired)).build() {
+                // libappindicator-sys panics (not Err) when the library is missing at runtime.
+                let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    TrayIconBuilder::new()
+                        .with_menu(Box::new(menu.clone()))
+                        .with_icon(tray_icon_for(TrayState::Unpaired))
+                        .build()
+                        .map_err(|e| e.to_string())
+                }))
+                .unwrap_or_else(|_| Err("tray library missing (install libayatana-appindicator3-1)".into()));
+                match built {
                     Ok(i) => tray = Some(i),
-                    Err(e) => notify::error(&format!("can't create the tray icon: {e}")),
+                    Err(e) => notify::error(&format!("no tray icon, the drop window's close button now quits: {e}")),
                 }
             }
             Event::WindowEvent { event, .. } => match event {
+                // Without a tray there would be no way to get the window back: close quits.
+                WindowEvent::CloseRequested if tray.is_none() => {
+                    *flow = ControlFlow::Exit;
+                    return;
+                }
                 WindowEvent::CloseRequested => {
                     window.set_visible(false);
                     visible = false;
@@ -226,14 +284,25 @@ pub fn run() -> Result<(), String> {
                     }
                 }
                 t.finish(n, res.is_ok());
+                next_peer_check = Instant::now();
                 if t.in_flight == 0 {
                     reset_at = Some(Instant::now() + RESET_AFTER);
                 }
             }
+            Event::UserEvent(UserEvent::Fatal(e)) => {
+                notify::error(&e);
+                std::process::exit(1);
+            }
             Event::UserEvent(UserEvent::Listener(e)) => match e {
-                transfer::Event::Received(r) => notify::received(&r),
+                transfer::Event::Receiving(_) => receiving += 1,
+                transfer::Event::Received(r) => {
+                    receiving = receiving.saturating_sub(1);
+                    next_peer_check = Instant::now();
+                    notify::received(&r)
+                }
                 transfer::Event::Paired(ip) => {
                     code = None;
+                    next_peer_check = Instant::now();
                     notify::info(&format!("Paired with {ip}"));
                 }
                 transfer::Event::PairFailed(e) => {
@@ -242,6 +311,8 @@ pub fn run() -> Result<(), String> {
                     error_until = Some(Instant::now() + ERROR_FOR);
                 }
                 transfer::Event::Error(e) => {
+                    // ponytail: an Error without a Receiving (accept failure) can end a parallel receive's blue early.
+                    receiving = receiving.saturating_sub(1);
                     notify::error(&e);
                     error_until = Some(Instant::now() + ERROR_FOR);
                 }
@@ -280,6 +351,10 @@ pub fn run() -> Result<(), String> {
                 if code.as_ref().is_some_and(|(_, at)| at.elapsed() >= transfer::PAIR_WINDOW) {
                     code = None;
                 }
+                if now >= next_peer_check {
+                    peer = config::load_peer().ok().map(|p| p.host);
+                    next_peer_check = now + PEER_CHECK;
+                }
             }
             _ => {}
         }
@@ -292,22 +367,17 @@ pub fn run() -> Result<(), String> {
             window.set_title(&title);
             shown = title;
         }
-        let peer = config::load_peer().ok().map(|p| p.host);
-        let ts = match (&peer, error_until, t.in_flight) {
-            (_, Some(_), _) => TrayState::Error,
-            (None, ..) => TrayState::Unpaired,
-            (_, _, 0) => TrayState::Idle,
-            _ => TrayState::Busy,
-        };
+        let ts = tray_state(peer.is_some(), error_until.is_some(), t.in_flight > 0 || receiving > 0);
         if shown_tray.as_ref() != Some(&(ts, peer.clone())) {
+            status.set_text(status_text(peer.as_deref()));
             if let Some(i) = &tray {
                 let _ = i.set_icon(Some(tray_icon_for(ts)));
                 let _ = i.set_tooltip(Some(tooltip(peer.as_deref())));
             }
-            shown_tray = Some((ts, peer));
+            shown_tray = Some((ts, peer.clone()));
         }
         // Computed after handling, so a timer armed above takes effect at once.
-        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW)].into_iter().flatten().min();
+        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW), Some(next_peer_check)].into_iter().flatten().min();
         *flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
     })
 }
@@ -315,6 +385,16 @@ pub fn run() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_state_precedence() {
+        use TrayState::*;
+        assert_eq!(tray_state(true, true, true), Error);
+        assert_eq!(tray_state(false, true, false), Error);
+        assert_eq!(tray_state(false, false, true), Unpaired);
+        assert_eq!(tray_state(true, false, true), Busy);
+        assert_eq!(tray_state(true, false, false), Idle);
+    }
 
     #[test]
     fn icon_size() {

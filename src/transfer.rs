@@ -22,6 +22,8 @@ pub struct Received {
 
 #[derive(Debug)]
 pub enum Event {
+    /// A batch from the paired PC (named) was accepted and is being received.
+    Receiving(String),
     Received(Received),
     Paired(String),
     Refused(IpAddr),
@@ -128,11 +130,12 @@ fn send_batch(sess: &mut Session<TcpStream>, count: u16, paths: &[PathBuf]) -> R
 }
 
 /// One batch of files from a connected, mode-byte-consumed stream into `dir`.
-pub fn serve_one(stream: TcpStream, secret: &[u8; 32], dir: &Path) -> Result<Received, String> {
+/// `started` is called with the sender's name once the batch header arrives.
+pub fn serve_one(stream: TcpStream, secret: &[u8; 32], dir: &Path, started: &dyn Fn(&str)) -> Result<Received, String> {
     timeouts(&stream);
     let keep = stream.try_clone().map_err(|e| e.to_string())?;
     let mut sess = Session::server(stream, secret)?;
-    match receive(&mut sess, dir) {
+    match receive(&mut sess, dir, started) {
         Ok(r) => {
             sess.send(&Msg::Done { saved: r.files.len() as u16 })?;
             Ok(r)
@@ -148,8 +151,9 @@ pub fn serve_one(stream: TcpStream, secret: &[u8; 32], dir: &Path) -> Result<Rec
     }
 }
 
-fn receive(sess: &mut Session<TcpStream>, dir: &Path) -> Result<Received, String> {
+fn receive(sess: &mut Session<TcpStream>, dir: &Path, started: &dyn Fn(&str)) -> Result<Received, String> {
     let Msg::Batch { count, from } = sess.recv()? else { return Err("unexpected message".into()) };
+    started(&from);
     let mut files = Vec::new();
     for _ in 0..count {
         let Msg::File { size, name } = sess.recv()? else { return Err("unexpected message".into()) };
@@ -232,7 +236,7 @@ impl Listener {
                     Ok(p) => p,
                     Err(e) => return on_event(Event::Error(e)),
                 };
-                on_event(match serve_one(s, &peer.secret, &self.downloads) {
+                on_event(match serve_one(s, &peer.secret, &self.downloads, &|from| on_event(Event::Receiving(from.to_string()))) {
                     Ok(r) => Event::Received(r),
                     Err(e) if e.starts_with("handshake failed") => Event::Refused(ip),
                     Err(e) => Event::Error(e),
@@ -263,7 +267,7 @@ mod tests {
             let (mut s, _) = l.accept().unwrap();
             let mut mode = [0u8; 1];
             s.read_exact(&mut mode).unwrap();
-            serve_one(s, &secret, &dir)
+            serve_one(s, &secret, &dir, &|_| {})
         });
         (Peer { host, secret: [0; 32] }, h)
     }
@@ -368,6 +372,24 @@ mod tests {
         h.join().unwrap().unwrap();
         assert!(dst.join("evil").exists());
         assert!(!dst.parent().unwrap().join("evil").exists());
+    }
+
+    #[test]
+    fn receiving_event_precedes_received() {
+        let (dl, cfg, src) = (tmp(), tmp(), tmp());
+        let l = Listener::bind_with(0, dl, cfg.clone()).unwrap();
+        let port = l.port();
+        config::save_peer_to(&cfg, &Peer { host: "127.0.0.1".into(), secret: [7; 32] }).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        std::thread::spawn(move || l.run(move |e| tx.lock().unwrap().send(e).unwrap()));
+        std::fs::write(src.join("a.txt"), b"hi").unwrap();
+        let p = Peer { host: format!("127.0.0.1:{port}"), secret: [7; 32] };
+        send_files(&p, &[src.join("a.txt")]).unwrap();
+        let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(first, Event::Receiving(_)), "{first:?}");
+        let second = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(second, Event::Received(_)), "{second:?}");
     }
 
     #[test]

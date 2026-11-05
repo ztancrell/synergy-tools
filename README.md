@@ -39,10 +39,13 @@ Actions, Keep Above Others (or a Window Rule matching the title `Drop files to s
 ## Tray icon
 
 The app lives in the system tray on both PCs (status only: it is not a drop target). Colours:
-grey = not paired, green = paired and idle, blue = sending, red for 5 seconds after an error;
-the tooltip says `paired with <host>` or `not paired`. Menu: `Hide drop window` / `Show drop
+grey = not paired, green = paired and idle, blue = sending or receiving, red for 5 seconds after an
+error. The first menu line (greyed out) shows the status, `Paired with <host>` or `Not paired`
+(the hover tooltip with the same text works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop
 window`, `Pair…` (shows `Pairing code 1234-5678` in the window title for 2 minutes and in a
-notification with the command to run on the other PC), `Quit`. Starting a second copy fails with a
+notification with the command to run on the other PC), `Quit`. If the tray icon can't be created
+(library missing), a notification says so and closing the drop window quits the app. If the
+receiver thread dies, the app says so and exits. Starting a second copy fails with a
 notification, since the first one holds port 24851. On Linux the icon uses libappindicator
 (`libayatana-appindicator3`, falls back to an XEmbed icon for panels like tint2 without
 StatusNotifierItem support); the Linux build and the CI job need `libayatana-appindicator3-dev`.
