@@ -1,4 +1,5 @@
 mod config;
+mod notify;
 mod pair;
 mod proto;
 mod store;
@@ -90,14 +91,24 @@ fn run(args: &[String]) -> Result<(), String> {
         ["unpair"] => println!("{}", if config::remove_peer()? { "Unpaired." } else { "Not paired." }),
         ["send", _, ..] => {
             let paths: Vec<PathBuf> = args[1..].iter().map(PathBuf::from).collect();
-            transfer::check_files(&paths)?;
-            println!("{}", transfer::send_files(&config::load_peer()?, &paths)?);
+            // Send To has no terminal, so the result also goes to a notification.
+            let res = transfer::check_files(&paths).and_then(|_| transfer::send_files(&config::load_peer()?, &paths));
+            match &res {
+                Ok(m) => notify::info(m),
+                Err(e) => notify::error(e),
+            }
+            println!("{}", res?);
         }
         ["listen"] => {
             let dir = downloads()?;
             let l = Listener::bind(PORT, dir.clone())?;
             println!("Listening on port {PORT}, saving to {}", dir.display());
-            l.run(|e| println!("{}", show(&e)))
+            l.run(|e| {
+                println!("{}", show(&e));
+                if let Event::Received(r) = &e {
+                    notify::received(r);
+                }
+            })
         }
         _ => return Err(USAGE.into()),
     }

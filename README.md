@@ -41,6 +41,10 @@ synergy-dragndrop listen             receive files (saved to Downloads) until st
 unreachable; nothing is queued or retried. If the tray app is already running it holds port
 24851, so `pair` and `listen` say so; use its tray menu or quit it first.
 
+## Notifications
+
+Results show as desktop notifications, since "Send to" has no terminal: `send` reports success or the error, and a received transfer shows "N files received from <other PC>". Clicking that notification opens the Downloads folder (`xdg-open` on Linux, `explorer.exe` on Windows). If a notification can't be shown, the reason goes to stderr and the transfer is unaffected.
+
 ## Where files go
 
 Received files are saved in your Downloads folder.
