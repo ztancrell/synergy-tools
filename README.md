@@ -11,6 +11,13 @@ and mouse between computers but not audio or file drag-and-drop.
 Both pair the two machines once with an 8-digit code, and their traffic is encrypted and
 authenticated. Usage: [docs/files.md](docs/files.md) and [synergy-audio/](synergy-audio/).
 
+## Pairing
+
+One code pairs two PCs: run `synergy-tools pair` on one and `synergy-tools pair <host> <code>`
+on the other. The pairing is meant to cover audio and files alike (audio joins once
+synergy-audio moves into the root crate; until then it pairs on its own). Pairing again with
+another PC adds a partner; `synergy-tools partners` lists them. Details: [docs/files.md](docs/files.md#pairing).
+
 ## Layout
 
 The repo root is the `synergy-tools` crate (the file-sending tool, formerly synergy-dragndrop,

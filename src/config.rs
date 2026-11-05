@@ -1,16 +1,25 @@
-use crate::PORT;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
-/// The one paired PC: where to reach it and the shared secret from pairing.
-pub struct Peer {
+/// A paired PC: its id (from the secret), where to reach it, the shared secret, and who it said it is.
+#[derive(Clone, PartialEq)]
+pub struct Partner {
+    pub id: [u8; 8],
     pub host: String,
     pub secret: [u8; 32],
+    pub os: String,
+    pub name: String,
 }
 
-impl std::fmt::Debug for Peer {
+impl std::fmt::Debug for Partner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Peer").field("host", &self.host).field("secret", &"<redacted>").finish()
+        f.debug_struct("Partner")
+            .field("id", &hex(&self.id))
+            .field("host", &self.host)
+            .field("secret", &"<redacted>")
+            .field("os", &self.os)
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -33,50 +42,78 @@ pub fn config_dir() -> Result<PathBuf, String> {
     dirs::config_dir().map(|d| d.join("synergy-tools")).ok_or_else(|| "no config directory on this system".to_string())
 }
 
-const NOT_PAIRED: &str = "not paired yet: run `synergy-tools pair` on one PC, then `synergy-tools pair <host> <code>` on the other";
+pub const NOT_PAIRED: &str =
+    "not paired yet: run `synergy-tools pair` on one PC, then `synergy-tools pair <host> <code>` on the other";
 
-pub fn load_peer_from(dir: &Path) -> Result<Peer, String> {
-    let path = dir.join("peer");
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("{NOT_PAIRED} ({} missing)", path.display()))?;
-    match text.split_whitespace().collect::<Vec<_>>()[..] {
-        [host, secret] => match unhex(secret) {
-            Some(secret) => Ok(Peer { host: host.to_string(), secret }),
-            None => Err(format!("{} is damaged: run `synergy-tools pair` again", path.display())),
-        },
-        _ => Err(format!("{} is damaged: run `synergy-tools pair` again", path.display())),
-    }
+/// One line per partner: `<id hex16> <host> <secret hex64> <os> <name>`; the name is the rest of the line.
+pub fn load_partners_from(dir: &Path) -> Result<Vec<Partner>, String> {
+    let path = dir.join("partners");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let damaged = || format!("{} is damaged: delete it and pair again", path.display());
+    text.lines()
+        .map(|line| match line.splitn(5, ' ').collect::<Vec<_>>()[..] {
+            [id, host, secret, os, name] if !host.is_empty() && !os.is_empty() && !name.is_empty() => Ok(Partner {
+                id: unhex(id).ok_or_else(damaged)?,
+                host: host.into(),
+                secret: unhex(secret).ok_or_else(damaged)?,
+                os: os.into(),
+                name: name.into(),
+            }),
+            _ => Err(damaged()),
+        })
+        .collect()
 }
 
-pub fn save_peer_to(dir: &Path, p: &Peer) -> Result<(), String> {
+pub fn save_partners_to(dir: &Path, ps: &[Partner]) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let tmp = dir.join("peer.tmp");
+    let tmp = dir.join("partners.tmp");
+    let text: String =
+        ps.iter().map(|p| format!("{} {} {} {} {}\n", hex(&p.id), p.host, hex(&p.secret), p.os, p.name)).collect();
     let write = || -> std::io::Result<()> {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        std::io::Write::write_all(&mut opts.open(&tmp)?, format!("{} {}\n", p.host, hex(&p.secret)).as_bytes())?;
-        std::fs::rename(&tmp, dir.join("peer"))
+        std::io::Write::write_all(&mut opts.open(&tmp)?, text.as_bytes())?;
+        std::fs::rename(&tmp, dir.join("partners"))
     };
-    write().map_err(|e| format!("cannot save {}: {e}", dir.join("peer").display()))
+    write().map_err(|e| format!("cannot save {}: {e}", dir.join("partners").display()))
 }
 
-pub fn load_peer() -> Result<Peer, String> {
-    load_peer_from(&config_dir()?)
-}
-
-pub fn save_peer(p: &Peer) -> Result<(), String> {
-    save_peer_to(&config_dir()?, p)
-}
-
-/// Forget the pairing. Ok(false) if there was none.
-pub fn remove_peer() -> Result<bool, String> {
-    let path = config_dir()?.join("peer");
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("cannot remove {}: {e}", path.display())),
+/// Pairing again with the same PC (same name and OS) replaces it; anything else is added.
+pub fn add_partner_to(dir: &Path, p: Partner) -> Result<(), String> {
+    let mut ps = load_partners_from(dir)?;
+    match ps.iter_mut().find(|q| q.name == p.name && q.os == p.os) {
+        Some(q) => *q = p,
+        None => ps.push(p),
     }
+    save_partners_to(dir, &ps)
+}
+
+pub fn load_partners() -> Result<Vec<Partner>, String> {
+    load_partners_from(&config_dir()?)
+}
+
+pub fn save_partners(ps: &[Partner]) -> Result<(), String> {
+    save_partners_to(&config_dir()?, ps)
+}
+
+pub fn add_partner(p: Partner) -> Result<(), String> {
+    add_partner_to(&config_dir()?, p)
+}
+
+/// By name (ASCII case-insensitive) or host.
+pub fn find<'a>(ps: &'a [Partner], key: &str) -> Result<&'a Partner, String> {
+    if ps.is_empty() {
+        return Err(NOT_PAIRED.into());
+    }
+    ps.iter().find(|p| p.name.eq_ignore_ascii_case(key) || p.host == key).ok_or_else(|| {
+        format!("no partner {key:?}; partners: {}", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))
+    })
 }
 
 /// This PC's LAN address as the other PC would reach it, else the PC name.
@@ -99,9 +136,9 @@ pub fn this_pc_name() -> String {
     name.filter(|n| !n.is_empty()).unwrap_or_else(|| "other PC".to_string())
 }
 
-/// "host" or "host:port" (default PORT) to an IPv4 address.
-pub fn resolve(target: &str) -> Result<SocketAddr, String> {
-    if target.contains(':') { target.to_socket_addrs() } else { (target, PORT).to_socket_addrs() }
+/// "host" or "host:port" to an IPv4 address.
+pub fn resolve(target: &str, default_port: u16) -> Result<SocketAddr, String> {
+    if target.contains(':') { target.to_socket_addrs() } else { (target, default_port).to_socket_addrs() }
         .map_err(|e| format!("bad target {target:?}: {e}"))?
         .find(SocketAddr::is_ipv4)
         .ok_or(format!("{target:?} has no IPv4 address"))
@@ -117,49 +154,87 @@ mod tests {
         std::env::temp_dir().join(format!("sdd-test-{}", hex(&r)))
     }
 
+    fn partner(name: &str, os: &str, host: &str, secret: u8) -> Partner {
+        Partner { id: [secret; 8], host: host.into(), secret: [secret; 32], os: os.into(), name: name.into() }
+    }
+
     #[test]
-    fn peer_debug_hides_secret() {
-        let p = Peer { host: "h".into(), secret: [0xab; 32] };
+    fn partner_debug_hides_secret() {
+        let p = partner("pc", "linux", "h", 0xab);
         let d = format!("{p:?}");
         assert!(!d.contains(&hex(&p.secret)) && !d.contains("171") && d.contains("<redacted>"), "{d}");
     }
 
     #[test]
-    fn peer_round_trip() {
+    fn partners_round_trip() {
         let d = tmp();
-        save_peer_to(&d, &Peer { host: "192.168.1.5".into(), secret: [7; 32] }).unwrap();
-        let p = load_peer_from(&d).unwrap();
-        assert_eq!((p.host.as_str(), p.secret), ("192.168.1.5", [7; 32]));
+        let ps = vec![partner("pc-a", "linux", "192.168.1.5", 1), partner("Living Room PC", "windows", "10.0.0.2:24851", 2)];
+        save_partners_to(&d, &ps).unwrap();
+        assert_eq!(load_partners_from(&d).unwrap(), ps);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
-    fn missing_peer_says_how_to_pair() {
-        assert!(load_peer_from(&tmp()).unwrap_err().contains("synergy-tools pair"));
+    fn add_replaces_same_name_and_os() {
+        let d = tmp();
+        add_partner_to(&d, partner("pc", "linux", "h1", 1)).unwrap();
+        add_partner_to(&d, partner("pc", "linux", "h2", 2)).unwrap();
+        let ps = load_partners_from(&d).unwrap();
+        assert_eq!(ps, vec![partner("pc", "linux", "h2", 2)]);
+        add_partner_to(&d, partner("pc", "windows", "h3", 3)).unwrap();
+        assert_eq!(load_partners_from(&d).unwrap().len(), 2);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
-    fn damaged_peer_file_rejected() {
+    fn missing_partners_file_is_empty() {
+        assert!(load_partners_from(&tmp()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn damaged_partners_file_rejected() {
         let d = tmp();
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("peer"), "host zz\n").unwrap();
-        assert!(load_peer_from(&d).unwrap_err().contains("damaged"));
+        std::fs::write(d.join("partners"), "0011 host zz linux pc\n").unwrap();
+        assert!(load_partners_from(&d).unwrap_err().contains("pair again"));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
-    fn peer_file_is_private() {
+    fn partners_file_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let d = tmp();
-        save_peer_to(&d, &Peer { host: "h".into(), secret: [1; 32] }).unwrap();
-        let mode = std::fs::metadata(d.join("peer")).unwrap().permissions().mode();
+        save_partners_to(&d, &[partner("pc", "linux", "h", 1)]).unwrap();
+        let mode = std::fs::metadata(d.join("partners")).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
+    fn set_host_keeps_secret() {
+        let d = tmp();
+        save_partners_to(&d, &[partner("pc-a", "linux", "h1", 1), partner("pc-b", "windows", "h2", 2)]).unwrap();
+        let mut ps = load_partners_from(&d).unwrap();
+        let i = ps.iter().position(|p| p == find(&ps, "pc-b").unwrap()).unwrap();
+        ps[i].host = "h9".into();
+        save_partners_to(&d, &ps).unwrap();
+        let p = load_partners_from(&d).unwrap().remove(1);
+        assert_eq!((p.host.as_str(), p.secret, p.id), ("h9", [2; 32], [2; 8]));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn find_by_name_or_host() {
+        let ps = [partner("pc-a", "linux", "10.0.0.1", 1), partner("pc-b", "windows", "10.0.0.2", 2)];
+        assert_eq!(find(&ps, "PC-A").unwrap().name, "pc-a");
+        assert_eq!(find(&ps, "10.0.0.2").unwrap().name, "pc-b");
+        let e = find(&ps, "nope").unwrap_err();
+        assert!(e.contains("pc-a") && e.contains("pc-b"), "{e}");
+    }
+
+    #[test]
     fn resolve_default_port() {
-        assert_eq!(resolve("127.0.0.1").unwrap().port(), 24851);
+        assert_eq!(resolve("127.0.0.1", 24851).unwrap().port(), 24851);
     }
 }

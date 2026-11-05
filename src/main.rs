@@ -9,7 +9,6 @@ mod proto;
 mod store;
 mod transfer;
 
-use config::Peer;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use transfer::{Event, Listener};
@@ -19,10 +18,12 @@ pub(crate) const PORT: u16 = 24851;
 const USAGE: &str = "usage:
   synergy-tools                         tray app (drop window, receives files)
   synergy-tools pair                    show a code and wait for the other PC to pair
-  synergy-tools pair <host> <code>      pair with the PC showing <code>
-  synergy-tools peer <host>             change the paired PC's address
-  synergy-tools unpair                  forget the paired PC
-  synergy-tools files send <file>...    send files to the paired PC
+  synergy-tools pair <host> <code>      pair with the PC showing <code> (adds a partner)
+  synergy-tools partners                list paired PCs
+  synergy-tools partner <name> <host>   change a partner's address
+  synergy-tools unpair <name>           forget a partner
+  synergy-tools files send [--to <name>] <file>...
+                                        send files to a partner (--to if there are several)
   synergy-tools files listen            receive files without the tray app
   synergy-tools --version";
 
@@ -38,8 +39,8 @@ fn show(e: &Event) -> String {
             let n = names.len();
             format!("{n} file{} received from {}: {}", if n == 1 { "" } else { "s" }, r.from, names.join(", "))
         }
-        Event::Paired(ip) => format!("Paired with {ip}."),
-        Event::Refused(ip) => format!("refused connection from {ip}: not the paired PC"),
+        Event::Paired(name) => format!("Paired with {name}."),
+        Event::Refused(ip) => format!("refused connection from {ip}: not a paired PC"),
         Event::Error(e) | Event::PairFailed(e) => e.clone(),
     }
 }
@@ -67,6 +68,19 @@ fn pair_host() -> Result<(), String> {
     })
 }
 
+fn send(to: Option<&str>, args: &[std::ffi::OsString]) -> Result<(), String> {
+    let paths: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
+    // Send To has no terminal, so the result also goes to a notification.
+    let res = transfer::check_files(&paths)
+        .and_then(|_| transfer::send_files(&transfer::only_partner(config::load_partners()?, to)?, &paths));
+    match &res {
+        Ok(m) => notify::info(m),
+        Err(e) => notify::error(e),
+    }
+    println!("{}", res?);
+    Ok(())
+}
+
 fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
     // Lossy only for subcommand/host/code matching; `files send` paths keep their raw bytes.
     let lossy: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
@@ -75,26 +89,38 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
         [] => tray::run()?,
         ["pair"] => pair_host()?,
         ["pair", host, code] => {
-            transfer::pair_with(host, code)?;
-            println!("Paired with {host}.");
+            let p = transfer::pair_with(host, code)?;
+            println!("Paired with {} ({}).", p.name, p.os);
         }
-        ["peer", host] => {
-            config::resolve(host)?;
-            let secret = config::load_peer()?.secret;
-            config::save_peer(&Peer { host: host.to_string(), secret })?;
-            println!("The paired PC is now at {host}.");
-        }
-        ["unpair"] => println!("{}", if config::remove_peer()? { "Unpaired." } else { "Not paired." }),
-        ["files", "send", _, ..] => {
-            let paths: Vec<PathBuf> = args[2..].iter().map(PathBuf::from).collect();
-            // Send To has no terminal, so the result also goes to a notification.
-            let res = transfer::check_files(&paths).and_then(|_| transfer::send_files(&config::load_peer()?, &paths));
-            match &res {
-                Ok(m) => notify::info(m),
-                Err(e) => notify::error(e),
+        ["partners"] => {
+            let ps = config::load_partners()?;
+            if ps.is_empty() {
+                println!("Not paired.");
             }
-            println!("{}", res?);
+            for p in ps {
+                println!("{}  {}  {}", p.name, p.os, p.host);
+            }
         }
+        ["partner", name, host] => {
+            config::resolve(host, PORT)?;
+            let mut ps = config::load_partners()?;
+            let id = config::find(&ps, name)?.id;
+            let p = ps.iter_mut().find(|p| p.id == id).expect("found above");
+            p.host = host.to_string();
+            let name = p.name.clone();
+            config::save_partners(&ps)?;
+            println!("{name} is now at {host}.");
+        }
+        ["unpair", name] => {
+            let mut ps = config::load_partners()?;
+            let p = config::find(&ps, name)?.clone();
+            ps.retain(|q| q.id != p.id);
+            config::save_partners(&ps)?;
+            println!("Unpaired {}.", p.name);
+        }
+        ["files", "send", "--to", to, _, ..] => send(Some(to), &args[4..])?,
+        ["files", "send", "--to", ..] => return Err(USAGE.into()),
+        ["files", "send", _, ..] => send(None, &args[2..])?,
         ["files", "listen"] => {
             let dir = downloads()?;
             let l = Listener::bind(PORT, dir.clone())?;

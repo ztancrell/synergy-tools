@@ -1,4 +1,9 @@
-//! SPAKE2 pairing over a stream: an 8-digit code becomes a shared 32-byte secret (the Noise PSK).
+//! SPAKE2 pairing over a stream: an 8-digit code becomes a shared 32-byte secret (the Noise PSK),
+//! and each side learns the other's name and OS.
+//!
+//! Wire (after the joiner's `P`): joiner → `msg_a`, `who_j`; host → `msg_b ‖ confB`, `who_h`;
+//! joiner → `confA`; host → `OK` (all frames). `who` = `os + "\n" + name`, at most 1000 bytes.
+//! Both confirmations cover both `who`s, so neither name can be swapped in transit.
 
 use crate::proto::{read_frame, write_frame};
 use sha2::{Digest, Sha256};
@@ -16,7 +21,7 @@ fn digest(parts: &[&[u8]]) -> [u8; 32] {
 }
 
 fn spake(code: &str, joiner: bool) -> (Spake2<Ed25519Group>, Vec<u8>) {
-    let (pw, a, b) = (Password::new(code), Identity::new(b"synergy-dragndrop joiner"), Identity::new(b"synergy-dragndrop host"));
+    let (pw, a, b) = (Password::new(code), Identity::new(b"synergy-tools joiner"), Identity::new(b"synergy-tools host"));
     if joiner { Spake2::start_a(&pw, &a, &b) } else { Spake2::start_b(&pw, &a, &b) }
 }
 
@@ -54,36 +59,82 @@ fn io(e: std::io::Error) -> String {
     format!("pairing failed: {e}")
 }
 
+/// Who a PC says it is during pairing.
+#[derive(Debug)]
+pub struct Who {
+    pub name: String,
+    pub os: String,
+}
+
+impl Who {
+    pub fn this_pc() -> Who {
+        Who { name: crate::config::this_pc_name(), os: std::env::consts::OS.into() }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        format!("{}\n{}", self.os, self.name).into_bytes()
+    }
+
+    /// Refuses anything that could not be stored as one partners-file line.
+    fn decode(b: &[u8]) -> Result<Who, String> {
+        let bad = || "pairing failed: the other PC sent a bad name".to_string();
+        let s = std::str::from_utf8(b).ok().filter(|_| b.len() <= 1000).ok_or_else(bad)?;
+        let (os, name) = s.split_once('\n').ok_or_else(bad)?;
+        let ok = !os.is_empty() && !name.is_empty() && !os.contains(' ') && !s.chars().any(|c| c.is_control() && c != '\n');
+        if !ok || name.contains('\n') {
+            return Err(bad());
+        }
+        Ok(Who { name: name.into(), os: os.into() })
+    }
+}
+
+/// Sent before every session so the listener knows which secret to use.
+pub fn partner_id(secret: &[u8; 32]) -> [u8; 8] {
+    digest(&[b"synergy-tools id", secret])[..8].try_into().unwrap()
+}
+
+fn confirm(label: &[u8], key: &[u8], who_j: &[u8], who_h: &[u8]) -> [u8; 32] {
+    digest(&[label, key, who_j, who_h])
+}
+
 /// Host side (the caller already read `b'P'`). One attempt; the secret exists only after both confirmations match.
-pub fn host(s: &mut (impl Read + Write), code: &str) -> Result<[u8; 32], String> {
+pub fn host(s: &mut (impl Read + Write), code: &str, me: &Who) -> Result<(Who, [u8; 32]), String> {
     let msg_a = read_frame(s).map_err(io)?;
+    let who_j = read_frame(s).map_err(io)?;
+    let them = Who::decode(&who_j)?;
+    let who_h = me.encode();
     let (sp, msg_b) = spake(code, false);
     let key = sp.finish(&msg_a).map_err(|_| "pairing failed: bad message from the other PC")?;
-    let reply = [&msg_b[..], &digest(&[b"synergy-dragndrop confirm B", &key])].concat();
+    let reply = [&msg_b[..], &confirm(b"synergy-tools confirm B", &key, &who_j, &who_h)].concat();
     write_frame(s, &reply).map_err(io)?;
+    write_frame(s, &who_h).map_err(io)?;
     // A joiner that rejects our confirmation just disconnects, which looks the same as a wrong code.
     let conf = read_frame(s).map_err(|_| WRONG.to_string())?;
-    if !same(&conf, &digest(&[b"synergy-dragndrop confirm A", &key])) {
+    if !same(&conf, &confirm(b"synergy-tools confirm A", &key, &who_j, &who_h)) {
         return Err(WRONG.into());
     }
     write_frame(s, b"OK").map_err(io)?;
-    Ok(digest(&[b"synergy-dragndrop secret", &key]))
+    Ok((them, digest(&[b"synergy-tools secret", &key])))
 }
 
 /// Join side: writes `b'P'` first.
-pub fn join(s: &mut (impl Read + Write), code: &str) -> Result<[u8; 32], String> {
+pub fn join(s: &mut (impl Read + Write), code: &str, me: &Who) -> Result<(Who, [u8; 32]), String> {
     s.write_all(b"P").map_err(io)?;
+    let who_j = me.encode();
     let (sp, msg_a) = spake(code, true);
     write_frame(s, &msg_a).map_err(io)?;
+    write_frame(s, &who_j).map_err(io)?;
     let reply = read_frame(s).map_err(io)?;
+    let who_h = read_frame(s).map_err(io)?;
+    let them = Who::decode(&who_h)?;
     let (msg_b, conf) = reply.split_at_checked(reply.len().saturating_sub(32)).ok_or("pairing failed: bad reply")?;
     let key = sp.finish(msg_b).map_err(|_| "pairing failed: bad reply from the other PC")?;
-    if !same(conf, &digest(&[b"synergy-dragndrop confirm B", &key])) {
+    if !same(conf, &confirm(b"synergy-tools confirm B", &key, &who_j, &who_h)) {
         return Err(WRONG.into());
     }
-    write_frame(s, &digest(&[b"synergy-dragndrop confirm A", &key])).map_err(io)?;
+    write_frame(s, &confirm(b"synergy-tools confirm A", &key, &who_j, &who_h)).map_err(io)?;
     match read_frame(s) {
-        Ok(ok) if ok == b"OK" => Ok(digest(&[b"synergy-dragndrop secret", &key])),
+        Ok(ok) if ok == b"OK" => Ok((them, digest(&[b"synergy-tools secret", &key]))),
         _ => Err(WRONG.into()),
     }
 }
@@ -93,7 +144,13 @@ mod tests {
     use super::*;
     use std::net::{TcpListener, TcpStream};
 
-    fn pair_over_loopback(host_code: &str, join_code: &str) -> (Result<[u8; 32], String>, Result<[u8; 32], String>) {
+    type Side = Result<(Who, [u8; 32]), String>;
+
+    fn who(name: &str, os: &str) -> Who {
+        Who { name: name.into(), os: os.into() }
+    }
+
+    fn pair_as(host_code: &str, join_code: &str, h_who: Who, j_who: Who) -> (Side, Side) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let hc = host_code.to_string();
@@ -102,18 +159,31 @@ mod tests {
             let mut first = [0u8; 1];
             s.read_exact(&mut first).unwrap();
             assert_eq!(first[0], b'P');
-            host(&mut s, &hc)
+            host(&mut s, &hc, &h_who)
         });
         let mut c = TcpStream::connect(addr).unwrap();
-        let j = join(&mut c, join_code);
+        let j = join(&mut c, join_code, &j_who);
         drop(c);
         (t.join().unwrap(), j)
     }
 
+    fn pair_over_loopback(host_code: &str, join_code: &str) -> (Side, Side) {
+        pair_as(host_code, join_code, who("pc-h", "linux"), who("pc j", "windows"))
+    }
+
     #[test]
-    fn same_code_same_secret() {
+    fn same_code_same_secret_and_names() {
         let (h, j) = pair_over_loopback("12345678", "12345678");
-        assert_eq!(h.unwrap(), j.unwrap());
+        let ((hw, hs), (jw, js)) = (h.unwrap(), j.unwrap());
+        assert_eq!(hs, js);
+        assert_eq!((hw.name.as_str(), hw.os.as_str()), ("pc j", "windows"));
+        assert_eq!((jw.name.as_str(), jw.os.as_str()), ("pc-h", "linux"));
+    }
+
+    #[test]
+    fn oversized_who_refused() {
+        let (h, j) = pair_as("12345678", "12345678", who("pc-h", "linux"), who(&"x".repeat(1000), "linux"));
+        assert!(h.is_err() && j.is_err());
     }
 
     #[test]

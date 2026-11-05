@@ -1,5 +1,5 @@
 //! Sending files (client) and receiving them (listener, pairing mode). No GUI imports.
-use crate::config::{self, Peer};
+use crate::config::{self, Partner};
 use crate::pair;
 use crate::proto::{Msg, Session, CHUNK};
 use crate::store;
@@ -22,9 +22,10 @@ pub struct Received {
 
 #[derive(Debug)]
 pub enum Event {
-    /// A batch from the paired PC (named) was accepted and is being received.
+    /// A batch from a partner (named) was accepted and is being received.
     Receiving(String),
     Received(Received),
+    /// Paired with a new partner (its name).
     Paired(String),
     Refused(IpAddr),
     Error(String),
@@ -51,18 +52,35 @@ fn timeouts(s: &TcpStream) {
 
 /// Resolve and connect (3 s), with the 30 s I/O timeouts set.
 fn connect(host: &str) -> Result<TcpStream, String> {
-    let addr = config::resolve(host)?;
+    let addr = config::resolve(host, crate::PORT)?;
     let s = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|_| "other PC unreachable".to_string())?;
     timeouts(&s);
     Ok(s)
 }
 
-/// Pair with the PC showing `code`, and remember it.
-pub fn pair_with(host: &str, code: &str) -> Result<(), String> {
+/// Pair with the PC showing `code`, and add it to the partners.
+pub fn pair_with(host: &str, code: &str) -> Result<Partner, String> {
     let code = pair::parse_code(code)?;
     let mut s = connect(host)?;
-    let secret = pair::join(&mut s, &code)?;
-    config::save_peer(&Peer { host: host.to_string(), secret })
+    let (who, secret) = pair::join(&mut s, &code, &pair::Who::this_pc())?;
+    let p = Partner { id: pair::partner_id(&secret), host: host.to_string(), secret, os: who.os, name: who.name };
+    config::add_partner(p.clone())?;
+    Ok(p)
+}
+
+/// The partner to send to: `to` by name or host, else the only one.
+pub fn only_partner(ps: Vec<Partner>, to: Option<&str>) -> Result<Partner, String> {
+    if let Some(to) = to {
+        return config::find(&ps, to).cloned();
+    }
+    match &ps[..] {
+        [] => Err(config::NOT_PAIRED.into()),
+        [p] => Ok(p.clone()),
+        _ => Err(format!(
+            "several partners ({}): choose one with --to <name>",
+            ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
 }
 
 /// Every path must be an existing regular file. Runs before connecting.
@@ -79,10 +97,10 @@ pub fn check_files(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn send_files(peer: &Peer, paths: &[PathBuf]) -> Result<String, String> {
+pub fn send_files(p: &Partner, paths: &[PathBuf]) -> Result<String, String> {
     let count = u16::try_from(paths.len()).map_err(|_| "not sent: too many files at once".to_string())?;
-    let stream = connect(&peer.host).map_err(|e| format!("not sent: {e}"))?;
-    let mut sess = Session::client(stream, &peer.secret)
+    let stream = connect(&p.host).map_err(|e| format!("not sent: {e}"))?;
+    let mut sess = Session::client(stream, b'S', &p.id, &p.secret)
         .map_err(|_| "not sent: the other PC refused (pairing doesn't match: pair again)".to_string())?;
     if let Err((network, e)) = send_batch(&mut sess, count, paths) {
         // Only a failed write can mean the receiver hung up with a reason; local errors have none pending.
@@ -95,7 +113,7 @@ pub fn send_files(peer: &Peer, paths: &[PathBuf]) -> Result<String, String> {
     }
     match sess.recv() {
         Ok(Msg::Done { saved }) if saved == count => {
-            Ok(format!("{count} file{} sent to {}", if count == 1 { "" } else { "s" }, peer.host))
+            Ok(format!("{count} file{} sent to {}", if count == 1 { "" } else { "s" }, p.name))
         }
         Ok(Msg::Fail(r)) => Err(format!("not sent: {r}")),
         Ok(_) => Err("not sent: the other PC did not confirm".into()),
@@ -223,20 +241,28 @@ impl Listener {
                 let Some((code, _)) = armed.filter(|(_, t)| t.elapsed() < PAIR_WINDOW) else {
                     return on_event(Event::Refused(ip));
                 };
-                let saved = pair::host(&mut s, &code).and_then(|secret| {
-                    config::save_peer_to(&self.config_dir, &Peer { host: ip.to_string(), secret })
+                let saved = pair::host(&mut s, &code, &pair::Who::this_pc()).and_then(|(who, secret)| {
+                    let p = Partner { id: pair::partner_id(&secret), host: ip.to_string(), secret, os: who.os, name: who.name };
+                    config::add_partner_to(&self.config_dir, p.clone()).map(|()| p.name)
                 });
                 on_event(match saved {
-                    Ok(()) => Event::Paired(ip.to_string()),
+                    Ok(name) => Event::Paired(name),
                     Err(e) => Event::PairFailed(e),
                 });
             }
             b'S' => {
-                let peer = match config::load_peer_from(&self.config_dir) {
-                    Ok(p) => p,
+                let mut id = [0u8; 8];
+                if s.read_exact(&mut id).is_err() {
+                    return;
+                }
+                let secret = match config::load_partners_from(&self.config_dir) {
+                    Ok(ps) => match ps.into_iter().find(|p| p.id == id) {
+                        Some(p) => p.secret,
+                        None => return on_event(Event::Refused(ip)),
+                    },
                     Err(e) => return on_event(Event::Error(e)),
                 };
-                on_event(match serve_one(s, &peer.secret, &self.downloads, &|from| on_event(Event::Receiving(from.to_string()))) {
+                on_event(match serve_one(s, &secret, &self.downloads, &|from| on_event(Event::Receiving(from.to_string()))) {
                     Ok(r) => Event::Received(r),
                     Err(e) if e.starts_with("handshake failed") => Event::Refused(ip),
                     Err(e) => Event::Error(e),
@@ -260,20 +286,40 @@ mod tests {
     }
 
     /// One-shot receiver on loopback; the handle yields serve_one's result.
-    fn serve(secret: [u8; 32], dir: PathBuf) -> (Peer, std::thread::JoinHandle<Result<Received, String>>) {
+    fn serve(secret: [u8; 32], dir: PathBuf) -> (Partner, std::thread::JoinHandle<Result<Received, String>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let host = format!("127.0.0.1:{}", l.local_addr().unwrap().port());
         let h = std::thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
-            let mut mode = [0u8; 1];
-            s.read_exact(&mut mode).unwrap();
+            let mut mode_id = [0u8; 9];
+            s.read_exact(&mut mode_id).unwrap();
             serve_one(s, &secret, &dir, &|_| {})
         });
-        (Peer { host, secret: [0; 32] }, h)
+        (partner(&host, [0; 32]), h)
     }
 
-    fn peer_for(p: Peer, secret: [u8; 32]) -> Peer {
-        Peer { secret, ..p }
+    fn partner(host: &str, secret: [u8; 32]) -> Partner {
+        Partner { id: pair::partner_id(&secret), host: host.into(), secret, os: "linux".into(), name: "pc".into() }
+    }
+
+    fn peer_for(p: Partner, secret: [u8; 32]) -> Partner {
+        Partner { secret, ..p }
+    }
+
+    fn who(name: &str) -> pair::Who {
+        pair::Who { name: name.into(), os: "linux".into() }
+    }
+
+    /// Partners in `cfg` once there are `n` of them (the listener saves from its own thread).
+    fn wait_partners(cfg: &Path, n: usize) -> Vec<Partner> {
+        let t = Instant::now();
+        loop {
+            let ps = config::load_partners_from(cfg).unwrap();
+            if ps.len() == n || t.elapsed() > Duration::from_secs(2) {
+                return ps;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn count(d: &Path) -> usize {
@@ -309,7 +355,7 @@ mod tests {
         let f = tmp().join("x");
         std::fs::write(&f, b"x").unwrap();
         let t = Instant::now();
-        let e = send_files(&Peer { host: "127.0.0.1:1".into(), secret: [0; 32] }, &[f]).unwrap_err();
+        let e = send_files(&partner("127.0.0.1:1", [0; 32]), &[f]).unwrap_err();
         assert_eq!(e, "not sent: other PC unreachable");
         assert!(t.elapsed() < Duration::from_secs(4));
     }
@@ -329,7 +375,7 @@ mod tests {
     fn truncated_stream_leaves_nothing() {
         let dst = tmp();
         let (p, h) = serve([3; 32], dst.clone());
-        let mut s = Session::client(TcpStream::connect(&p.host).unwrap(), &[3; 32]).unwrap();
+        let mut s = Session::client(TcpStream::connect(&p.host).unwrap(), b'S', &[0; 8], &[3; 32]).unwrap();
         s.send(&Msg::Batch { count: 1, from: "pc".into() }).unwrap();
         s.send(&Msg::File { size: 1000, name: "t.bin".into() }).unwrap();
         s.send(&Msg::Data(vec![7; 10])).unwrap();
@@ -363,7 +409,7 @@ mod tests {
     fn hostile_name_stays_in_dir() {
         let dst = tmp();
         let (p, h) = serve([6; 32], dst.clone());
-        let mut s = Session::client(TcpStream::connect(&p.host).unwrap(), &[6; 32]).unwrap();
+        let mut s = Session::client(TcpStream::connect(&p.host).unwrap(), b'S', &[0; 8], &[6; 32]).unwrap();
         s.send(&Msg::Batch { count: 1, from: "pc".into() }).unwrap();
         s.send(&Msg::File { size: 1, name: "../evil".into() }).unwrap();
         s.send(&Msg::Data(vec![1])).unwrap();
@@ -379,12 +425,12 @@ mod tests {
         let (dl, cfg, src) = (tmp(), tmp(), tmp());
         let l = Listener::bind_with(0, dl, cfg.clone()).unwrap();
         let port = l.port();
-        config::save_peer_to(&cfg, &Peer { host: "127.0.0.1".into(), secret: [7; 32] }).unwrap();
+        config::save_partners_to(&cfg, &[partner("127.0.0.1", [7; 32])]).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let tx = Mutex::new(tx);
         std::thread::spawn(move || l.run(move |e| tx.lock().unwrap().send(e).unwrap()));
         std::fs::write(src.join("a.txt"), b"hi").unwrap();
-        let p = Peer { host: format!("127.0.0.1:{port}"), secret: [7; 32] };
+        let p = partner(&format!("127.0.0.1:{port}"), [7; 32]);
         send_files(&p, &[src.join("a.txt")]).unwrap();
         let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(matches!(first, Event::Receiving(_)), "{first:?}");
@@ -398,21 +444,48 @@ mod tests {
         let l = Listener::bind_with(0, dl, cfg.clone()).unwrap();
         let (pairing, port) = (l.pairing.clone(), l.port());
         std::thread::spawn(move || l.run(|_| {}));
-        let join = |code: &str| pair::join(&mut TcpStream::connect(("127.0.0.1", port)).unwrap(), code);
+        let join = |code: &str| pair::join(&mut TcpStream::connect(("127.0.0.1", port)).unwrap(), code, &who("pc j"));
         assert!(join("12345678").is_err());
         *pairing.lock().unwrap() = Some(("12345678".into(), Instant::now()));
-        let secret = join("12345678").unwrap();
+        let (_, secret) = join("12345678").unwrap();
         assert!(pairing.lock().unwrap().is_none());
         assert!(join("12345678").is_err());
-        let t = Instant::now();
-        let saved = loop {
-            match config::load_peer_from(&cfg) {
-                Ok(p) => break p,
-                Err(_) if t.elapsed() < Duration::from_secs(2) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => panic!("{e}"),
-            }
-        };
-        assert_eq!((saved.host.as_str(), saved.secret), ("127.0.0.1", secret));
+        let saved = wait_partners(&cfg, 1);
+        assert_eq!(saved.len(), 1);
+        let p = &saved[0];
+        assert_eq!((p.host.as_str(), p.secret, p.id, p.name.as_str()), ("127.0.0.1", secret, pair::partner_id(&secret), "pc j"));
+    }
+
+    #[test]
+    fn second_pairing_adds_partner() {
+        let (dl, cfg) = (tmp(), tmp());
+        let l = Listener::bind_with(0, dl, cfg.clone()).unwrap();
+        let (pairing, port) = (l.pairing.clone(), l.port());
+        std::thread::spawn(move || l.run(|_| {}));
+        for name in ["pc-a", "pc-b"] {
+            *pairing.lock().unwrap() = Some(("12345678".into(), Instant::now()));
+            pair::join(&mut TcpStream::connect(("127.0.0.1", port)).unwrap(), "12345678", &who(name)).unwrap();
+            wait_partners(&cfg, if name == "pc-a" { 1 } else { 2 });
+        }
+        let names: Vec<_> = config::load_partners_from(&cfg).unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["pc-a", "pc-b"]);
+    }
+
+    #[test]
+    fn unknown_partner_id_refused() {
+        let (dl, cfg, src) = (tmp(), tmp(), tmp());
+        let l = Listener::bind_with(0, dl.clone(), cfg.clone()).unwrap();
+        let port = l.port();
+        config::save_partners_to(&cfg, &[partner("127.0.0.1", [7; 32])]).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        std::thread::spawn(move || l.run(move |e| tx.lock().unwrap().send(e).unwrap()));
+        std::fs::write(src.join("a.txt"), b"hi").unwrap();
+        let stranger = Partner { id: [9; 8], ..partner(&format!("127.0.0.1:{port}"), [7; 32]) };
+        assert!(send_files(&stranger, &[src.join("a.txt")]).is_err());
+        let e = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(e, Event::Refused(_)), "{e:?}");
+        assert_eq!(count(&dl), 0);
     }
 
     #[test]
