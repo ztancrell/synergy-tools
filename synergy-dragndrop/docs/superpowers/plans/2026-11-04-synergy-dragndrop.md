@@ -1,5 +1,10 @@
 # synergy-dragndrop Implementation Plan
 
+> Superseded: this plan predates the move into the synergy-tools monorepo. The code now lives in
+> `synergy-dragndrop/` of https://github.com/ztancrell/synergy-tools; its workflows are
+> `.github/workflows/dragndrop-ci.yml` and `dragndrop-release.yml` at the repo root, and releases
+> are tagged `dragndrop-vX.Y.Z`. Paths and tags below are as originally planned.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One Rust program, run on both a Windows 10/11 PC and a Linux (KDE Plasma Wayland) PC, that sends files to the paired other PC from a drop window or a right-click "Send to other PC" entry and saves received files to Downloads, safely.

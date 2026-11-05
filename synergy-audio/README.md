@@ -1,6 +1,6 @@
 # synergy-audio
 
-[![CI](https://github.com/ztancrell/synergy-audio/actions/workflows/ci.yml/badge.svg)](https://github.com/ztancrell/synergy-audio/actions/workflows/ci.yml)
+[![CI](https://github.com/ztancrell/synergy-tools/actions/workflows/audio-ci.yml/badge.svg)](https://github.com/ztancrell/synergy-tools/actions/workflows/audio-ci.yml)
 
 Shares audio between two machines that already share keyboard and mouse with Synergy 3
 (which carries no audio). One machine captures everything it plays and streams it over UDP
@@ -13,15 +13,17 @@ optional autostart: a systemd user service for the Linux receiver, a scheduled t
 Windows sender; none for macOS yet). The macOS sender is built by CI but not in a tagged
 release yet. Encryption and pairing are newer than v0.2.0 and incompatible with it: update both
 machines together.
-Prebuilt downloads on the [Releases page](https://github.com/ztancrell/synergy-audio/releases).
+Prebuilt downloads are the `audio-vX.Y.Z` releases on the
+[synergy-tools Releases page](https://github.com/ztancrell/synergy-tools/releases) (none published yet).
 No GUI, no Synergy integration, no switching direction, no self-update yet.
 
 ## Download and install
 
 You need a Windows PC or a Mac (the one whose audio you want to hear) and a Linux PC with PipeWire
 (the one with your headphones) on the same LAN. Both sound devices must run at 48 kHz.
-From the [Releases page](https://github.com/ztancrell/synergy-audio/releases), download
-the two archives of the newest release:
+From the [synergy-tools Releases page](https://github.com/ztancrell/synergy-tools/releases), download
+the two archives of the newest `audio-vX.Y.Z` release (the `dragndrop-v*` releases are the
+other tool):
 
 - `synergy-audio-vX.Y.Z-linux-x86_64.tar.gz` for the Linux PC (built on Ubuntu 22.04, runs
   on most current distros).
@@ -156,7 +158,7 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 5. On Linux, build:
    ```sh
-   cd ~/projects/synergy-audio && cargo build --release
+   cd ~/projects/synergy-tools/synergy-audio && cargo build --release
    ```
 6. On Windows, open PowerShell and go to your Downloads folder (not `C:\Windows\system32`,
    where an admin PowerShell starts):
@@ -166,7 +168,7 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 7. Copy the program from Linux. The command is **`scp`**, not `cp` (in PowerShell `cp` is a
    local copy and fails with "Cannot find drive"):
    ```
-   scp zpt@192.168.254.90:projects/synergy-audio/target/x86_64-pc-windows-gnu/release/synergy-audio.exe .
+   scp zpt@192.168.254.90:projects/synergy-tools/synergy-audio/target/x86_64-pc-windows-gnu/release/synergy-audio.exe .
    ```
    The first time, it asks whether to trust the host key: type `yes`. Then enter your Linux
    password.
@@ -200,12 +202,12 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 10. On Windows, fetch the update script once, into Downloads:
     ```
     cd $HOME\Downloads
-    scp zpt@192.168.254.90:projects/synergy-audio/update.ps1 .
+    scp zpt@192.168.254.90:projects/synergy-tools/synergy-audio/update.ps1 .
     ```
 11. On Linux, stop any running receiver (Ctrl+C), then build both versions and start the
     receiver (40 ms buffer suits the Mac's Wi-Fi better than the 20 ms default):
     ```sh
-    cd ~/projects/synergy-audio && ./dev.sh --buffer-ms 40
+    cd ~/projects/synergy-tools/synergy-audio && ./dev.sh --buffer-ms 40
     ```
     Once Linux autostart is installed (step 13), `./dev.sh` updates and restarts the
     service instead and shows its log; see step 16.
@@ -225,7 +227,7 @@ journal instead of a terminal.
 13. On Linux, install it (in a source checkout it builds the release version first; in an
     extracted release folder it installs the bundled program):
     ```sh
-    cd ~/projects/synergy-audio && ./install-autostart.sh
+    cd ~/projects/synergy-tools/synergy-audio && ./install-autostart.sh
     ```
     It copies the program to `~/.local/bin/synergy-audio`, writes
     `~/.config/systemd/user/synergy-audio.service` (runs `synergy-audio receive --buffer-ms
@@ -273,8 +275,8 @@ hand (step 11, or `cargo run --release -- receive`).
     holds `synergy-audio.exe` (it asks for your Linux password each time):
     ```
     cd $HOME\Downloads
-    scp zpt@192.168.254.90:projects/synergy-audio/install-autostart.ps1 .
-    scp zpt@192.168.254.90:projects/synergy-audio/uninstall-autostart.ps1 .
+    scp zpt@192.168.254.90:projects/synergy-tools/synergy-audio/install-autostart.ps1 .
+    scp zpt@192.168.254.90:projects/synergy-tools/synergy-audio/uninstall-autostart.ps1 .
     ```
 19. Close any sender you started by hand (Ctrl+C in its window), then install. A normal
     (not administrator) PowerShell is enough:
@@ -490,7 +492,7 @@ dropped, packets rejected (failed to authenticate), and trims. If underruns keep
 ## Dev scripts
 
 Conveniences for the author's own setup (Linux desktop at 192.168.254.90, user `zpt`, repo
-in `~/projects/synergy-audio`); edit the defaults for anything else.
+in `~/projects/synergy-tools/synergy-audio`); edit the defaults for anything else.
 
 On Linux, `./dev.sh` builds the Linux and Windows release binaries, then runs the receiver.
 Arguments are passed to `receive`:
@@ -525,7 +527,7 @@ the old sender is still running and holds the .exe, so close it first. First tim
 fetch the script itself (Windows PowerShell, in the folder you want to use):
 
 ```
-scp zpt@192.168.254.90:projects/synergy-audio/update.ps1 .
+scp zpt@192.168.254.90:projects/synergy-tools/synergy-audio/update.ps1 .
 ```
 
 Then each time:
@@ -568,35 +570,40 @@ access the first time you run it, allow it on private networks.
 
 ## Releases and CI
 
-GitHub Actions run on every push and pull request (`.github/workflows/ci.yml`): `cargo
+This tool lives in the `synergy-audio/` folder of the
+[synergy-tools](https://github.com/ztancrell/synergy-tools) monorepo; its workflows are in the
+repo root's `.github/workflows/`. GitHub Actions run on pushes to `main` and on pull requests that
+touch `synergy-audio/` or the workflow itself (`.github/workflows/audio-ci.yml`), from the
+`synergy-audio/` folder: `cargo
 test` and `cargo build --release` on Ubuntu 22.04, Windows and macOS (macOS also builds
 `x86_64-apple-darwin` and uploads it as the `macos-x86_64` workflow artifact, fetchable
 with `gh run download <run-id> -n macos-x86_64`).
 
-Pushing a tag `v*` runs `.github/workflows/release.yml`: it checks the tag matches the
+Pushing a tag `audio-v*` runs `.github/workflows/audio-release.yml`: it checks the tag (minus
+`audio-v`) matches the
 `version` in `Cargo.toml` (and fails otherwise), builds Linux on Ubuntu 22.04, Windows
 with MSVC and a static C runtime (no VC++ redistributable needed), and macOS for
 `aarch64-apple-darwin` and `x86_64-apple-darwin` joined with `lipo` into one universal
 binary, packages
-`synergy-audio-<tag>-linux-x86_64.tar.gz` (folder `synergy-audio-<tag>/` with the binary,
+`synergy-audio-vX.Y.Z-linux-x86_64.tar.gz` (folder `synergy-audio-vX.Y.Z/` with the binary,
 `install-autostart.sh`, `uninstall-autostart.sh`, README, LICENSE) and
-`synergy-audio-<tag>-windows-x86_64.zip` (files at the zip root: `synergy-audio.exe`,
+`synergy-audio-vX.Y.Z-windows-x86_64.zip` (files at the zip root: `synergy-audio.exe`,
 `install-autostart.ps1`, `uninstall-autostart.ps1`, README, LICENSE; `update.ps1` is the
-author's dev tool and is left out) and `synergy-audio-<tag>-macos-universal.tar.gz` (folder
-`synergy-audio-<tag>/` with the binary, README, LICENSE), writes `SHA256SUMS`, and creates the GitHub release with
-generated notes.
+author's dev tool and is left out) and `synergy-audio-vX.Y.Z-macos-universal.tar.gz` (folder
+`synergy-audio-vX.Y.Z/` with the binary, README, LICENSE), writes `SHA256SUMS`, and creates the GitHub release
+`audio-vX.Y.Z` with notes generated since the previous `audio-v*` release.
 
 ### Making a release (maintainer)
 
-1. Bump `version` in `Cargo.toml` (e.g. `0.2.0`), run `cargo build` so `Cargo.lock`
+1. Bump `version` in `synergy-audio/Cargo.toml` (e.g. `0.2.0`), run `cargo build` so `Cargo.lock`
    follows, update the Status line above, commit and push.
 2. Tag and push the tag:
    ```sh
-   git tag v0.2.0 && git push origin v0.2.0
+   git tag audio-v0.2.0 && git push origin audio-v0.2.0
    ```
 3. Watch the Actions tab; the release appears on the Releases page when it finishes. If
    the version guard fails (tag ≠ `Cargo.toml` version), delete the tag
-   (`git tag -d v0.2.0 && git push origin :refs/tags/v0.2.0`), fix, and tag again.
+   (`git tag -d audio-v0.2.0 && git push origin :refs/tags/audio-v0.2.0`), fix, and tag again.
 
 ## License
 

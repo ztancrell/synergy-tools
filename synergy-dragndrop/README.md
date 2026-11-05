@@ -1,6 +1,6 @@
 # synergy-dragndrop
 
-[![CI](https://github.com/ztancrell/synergy-dragndrop/actions/workflows/ci.yml/badge.svg)](https://github.com/ztancrell/synergy-dragndrop/actions/workflows/ci.yml)
+[![CI](https://github.com/ztancrell/synergy-tools/actions/workflows/dragndrop-ci.yml/badge.svg)](https://github.com/ztancrell/synergy-tools/actions/workflows/dragndrop-ci.yml)
 
 Sends files between a Windows PC and a Linux PC on the same LAN, for machines that share
 keyboard and mouse with Synergy 3 (which cannot drag files across). Both machines run the
@@ -8,9 +8,11 @@ same program: each one can send files to, and receive files from, the one paired
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
-**Status:** v0.1.0. Windows <-> Linux, both directions. Not tagged or released yet (no GitHub
-remote yet), so build from source for now (see "Build from source" for the Windows exe); the
-release steps below describe what a tagged release will contain.
+**Status:** v0.1.0. Windows <-> Linux, both directions. Not tagged or released yet, so build from
+source for now (see "Build from source" for the Windows exe); the release steps below describe
+what a tagged release will contain. It lives in the `synergy-dragndrop/` folder of the
+[synergy-tools](https://github.com/ztancrell/synergy-tools) monorepo; releases will be the
+`dragndrop-vX.Y.Z` releases on its [Releases page](https://github.com/ztancrell/synergy-tools/releases).
 
 The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME work as extras.
 
@@ -202,8 +204,13 @@ RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-
 Copy `target/x86_64-pc-windows-gnu/release/synergy-dragndrop.exe`, `install-autostart.ps1`,
 `uninstall-autostart.ps1` and `README.md` into one folder on the Windows PC and follow the Windows
 install steps above. Alternatively run a native MSVC `cargo build --release` on Windows. A quick
-check without linking: `cargo check --target x86_64-pc-windows-gnu`. A tag `vX.Y.Z` (which must equal the version in
-`Cargo.toml`) runs the release workflow: both archives and `SHA256SUMS`.
+check without linking: `cargo check --target x86_64-pc-windows-gnu`. Commands above run in the
+`synergy-dragndrop/` folder. CI (`.github/workflows/dragndrop-ci.yml` at the repo root) runs
+`cargo test` and `cargo build --release` on Ubuntu 22.04 and Windows for pushes to `main` and pull
+requests that touch `synergy-dragndrop/`. A tag `dragndrop-vX.Y.Z` (X.Y.Z must equal the version
+in `synergy-dragndrop/Cargo.toml`), e.g. `git tag dragndrop-v0.1.0 && git push origin
+dragndrop-v0.1.0`, runs `.github/workflows/dragndrop-release.yml`: both archives (still named
+`synergy-dragndrop-vX.Y.Z-...`) and `SHA256SUMS`, as the GitHub release `dragndrop-vX.Y.Z`.
 
 ## How it works
 

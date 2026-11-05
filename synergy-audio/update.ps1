@@ -9,7 +9,7 @@ param(
 )
 
 $TaskName = "synergy-audio"
-$remote = "${User}@${Desktop}:projects/synergy-audio/target/x86_64-pc-windows-gnu/release/synergy-audio.exe"
+$remote = "${User}@${Desktop}:projects/synergy-tools/synergy-audio/target/x86_64-pc-windows-gnu/release/synergy-audio.exe"
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     $dir = Join-Path $env:LOCALAPPDATA "synergy-audio"

@@ -1,11 +1,18 @@
-name: Release
+name: dragndrop release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['dragndrop-v*']  # e.g. dragndrop-v0.2.0; must match synergy-dragndrop/Cargo.toml
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: synergy-dragndrop
+
+env:
+  TOOL_TAG_PREFIX: dragndrop-v
 
 jobs:
   version-guard:
@@ -15,11 +22,11 @@ jobs:
       - name: Tag must match Cargo.toml version
         shell: bash
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${GITHUB_REF_NAME#$TOOL_TAG_PREFIX}"
           ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
           echo "tag: $tag  Cargo.toml: $ver"
           if [ "$tag" != "$ver" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $ver. Bump Cargo.toml, commit, and tag v$ver."
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $ver. Bump synergy-dragndrop/Cargo.toml, commit, and tag ${TOOL_TAG_PREFIX}$ver."
             exit 1
           fi
 
@@ -34,14 +41,14 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          dir="synergy-dragndrop-$GITHUB_REF_NAME"
+          dir="synergy-dragndrop-v${GITHUB_REF_NAME#$TOOL_TAG_PREFIX}"
           mkdir "$dir"
           cp target/release/synergy-dragndrop install-autostart.sh uninstall-autostart.sh README.md LICENSE "$dir/"
           tar czf "$dir-linux-x86_64.tar.gz" "$dir"
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: synergy-dragndrop-*-linux-x86_64.tar.gz
+          path: synergy-dragndrop/synergy-dragndrop-*-linux-x86_64.tar.gz
 
   windows:
     needs: version-guard
@@ -56,18 +63,21 @@ jobs:
         shell: pwsh
         # Files at the zip root: Explorer's "Extract All" puts them in one folder named after the zip.
         run: |
-          $zip = "synergy-dragndrop-$env:GITHUB_REF_NAME-windows-x86_64.zip"
+          $zip = "synergy-dragndrop-v$($env:GITHUB_REF_NAME.Substring($env:TOOL_TAG_PREFIX.Length))-windows-x86_64.zip"
           Compress-Archive -DestinationPath $zip -Path target\release\synergy-dragndrop.exe, install-autostart.ps1, uninstall-autostart.ps1, README.md, LICENSE
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: synergy-dragndrop-*-windows-x86_64.zip
+          path: synergy-dragndrop/synergy-dragndrop-*-windows-x86_64.zip
 
   release:
     needs: [linux, windows]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    defaults:
+      run:
+        working-directory: .
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -78,5 +88,7 @@ jobs:
         run: |
           sha256sum synergy-dragndrop-* > SHA256SUMS
           cat SHA256SUMS
+          # Notes start from this tool's previous release, not the other tool's.
+          prev=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName -q '.[].tagName' | grep "^$TOOL_TAG_PREFIX" | head -n1 || true)
           gh release create "$GITHUB_REF_NAME" synergy-dragndrop-* SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes ${prev:+--notes-start-tag "$prev"}

@@ -1,11 +1,18 @@
-name: CI
+name: audio CI
 
 on:
   push:
+    branches: [main]
+    paths: ['synergy-audio/**', '.github/workflows/audio-ci.yml']
   pull_request:
+    paths: ['synergy-audio/**', '.github/workflows/audio-ci.yml']
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: synergy-audio
 
 jobs:
   linux:
@@ -37,4 +44,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-x86_64
-          path: target/x86_64-apple-darwin/release/synergy-audio
+          path: synergy-audio/target/x86_64-apple-darwin/release/synergy-audio

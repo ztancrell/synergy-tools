@@ -1,11 +1,18 @@
-name: CI
+name: dragndrop CI
 
 on:
   push:
+    branches: [main]
+    paths: ['synergy-dragndrop/**', '.github/workflows/dragndrop-ci.yml']
   pull_request:
+    paths: ['synergy-dragndrop/**', '.github/workflows/dragndrop-ci.yml']
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    working-directory: synergy-dragndrop
 
 jobs:
   linux:
