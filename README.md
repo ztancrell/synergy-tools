@@ -8,8 +8,8 @@ same program: each one can send files to, and receive files from, the one paired
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
-**Status: in development.** Pairing and sending work from the command line (below); the tray
-app and drop window are not built yet.
+**Status: in development.** Pairing, sending and the drop window work (below); the tray app
+is not built yet.
 
 ## Pairing
 
@@ -24,6 +24,18 @@ will do this; until then do it by hand).
 A wrong code fails on both sides and the code is spent: start again with a new one.
 If a PC's address changes, run `synergy-dragndrop peer <new address>` on the other PC (the
 secret is kept); `synergy-dragndrop unpair` forgets the pairing.
+
+## Drop window
+
+Run `synergy-dragndrop` with no arguments: a small window titled `Drop files to send` opens at the
+bottom-right of the screen. Drag files onto it (from Explorer, Thunar, ...) and they go to the
+paired PC; the title shows `Release to send`, `Sending 2 files...`, then `Sent` or `Not sent`, and
+a notification gives the result. Closing the window quits the app for now (the tray icon will hide
+it instead). On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. Linux
+needs the GTK 3 runtime libraries (`libgtk-3-0`).
+
+Tip for KDE/GNOME Wayland, where apps can't force "always on top": right-click the title bar, More
+Actions, Keep Above Others (or a Window Rule matching the title `Drop files to send`).
 
 ## Command line
 

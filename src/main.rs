@@ -1,4 +1,5 @@
 mod config;
+mod gui;
 mod notify;
 mod pair;
 mod proto;
@@ -76,7 +77,7 @@ fn pair_host() -> Result<(), String> {
 fn run(args: &[String]) -> Result<(), String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--version"] => println!("synergy-dragndrop {}", env!("CARGO_PKG_VERSION")),
-        [] => return Err("the tray app is not built yet; use the subcommands below\n".to_string() + USAGE),
+        [] => gui::run()?,
         ["pair"] => pair_host()?,
         ["pair", host, code] => {
             transfer::pair_with(host, code)?;
