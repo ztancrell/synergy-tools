@@ -179,7 +179,7 @@ impl Listener {
     pub fn bind_with(port: u16, downloads: PathBuf, config_dir: PathBuf) -> Result<Self, String> {
         let sock = TcpListener::bind(("0.0.0.0", port)).map_err(|e| match e.kind() {
             std::io::ErrorKind::AddrInUse => format!(
-                "port {port} is busy: synergy-dragndrop is probably already running (use its tray menu \"Pair…\", or quit it first)"
+                "port {port} is busy: synergy-tools is probably already running, or the old synergy-dragndrop (quit it first)"
             ),
             _ => format!("cannot listen on port {port}: {e}"),
         })?;
@@ -419,6 +419,7 @@ mod tests {
     fn busy_port_message() {
         let a = Listener::bind_with(0, tmp(), tmp()).unwrap();
         let e = Listener::bind_with(a.port(), tmp(), tmp()).err().unwrap();
-        assert!(e.contains("already running"), "{e}");
+        assert!(e.contains("synergy-tools is probably already running"), "{e}");
+        assert!(e.contains("or the old synergy-dragndrop"), "{e}");
     }
 }

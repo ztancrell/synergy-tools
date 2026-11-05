@@ -2243,7 +2243,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "synergy-dragndrop"
+name = "synergy-tools"
 version = "0.1.0"
 dependencies = [
  "dirs",

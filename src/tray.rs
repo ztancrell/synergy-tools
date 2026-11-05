@@ -235,8 +235,8 @@ fn tray_icon_for(s: TrayState) -> Icon {
 
 fn tooltip(paired: Option<&str>) -> String {
     match paired {
-        Some(h) => format!("synergy-dragndrop: paired with {h}"),
-        None => "synergy-dragndrop: not paired".into(),
+        Some(h) => format!("synergy-tools: paired with {h}"),
+        None => "synergy-tools: not paired".into(),
     }
 }
 
@@ -446,7 +446,7 @@ fn start() -> Result<(), String> {
                     let now = Instant::now();
                     *pairing.lock().unwrap_or_else(|e| e.into_inner()) = Some((c.clone(), now));
                     notify::pair_command(&format!(
-                        "synergy-dragndrop pair {} {}",
+                        "synergy-tools pair {} {}",
                         config::local_address(),
                         pair::show_code(&c)
                     ));

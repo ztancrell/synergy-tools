@@ -4,7 +4,7 @@
 //! (`b'P'` pairing, `b'S'` session), then frames.
 //!
 //! Session: `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = pairing secret, prologue
-//! `synergy-dragndrop v1`. The client sends handshake message 1, the server replies with
+//! `synergy-tools files v1`. The client sends handshake message 1, the server replies with
 //! message 2; a wrong PSK makes the server's handshake fail. After that every frame is one
 //! Noise transport message whose plaintext is a `Msg`:
 //!   `B` count:u16 sender-name   batch header (client)
@@ -18,7 +18,7 @@
 use std::io::{self, Read, Write};
 
 const NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
-const PROLOGUE: &[u8] = b"synergy-dragndrop v1";
+const PROLOGUE: &[u8] = b"synergy-tools files v1";
 pub const CHUNK: usize = 60_000;
 
 pub fn write_frame(w: &mut impl Write, b: &[u8]) -> io::Result<()> {
