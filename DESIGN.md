@@ -99,6 +99,28 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
   session). Tray uses XEmbed-compatible appindicator fallback; right-click entry goes in
   Thunar's Send To menu; autostart also via `~/.config/openbox/autostart`. (My call.)
 
+- 2026-11-04: "Send to" runs a short-lived `synergy-dragndrop send <files...>` that connects to
+  the peer directly (no hand-off to the running instance); the result also goes to a notification.
+- 2026-11-04: Crates: `tao` (drop window), `tray-icon` with its default libappindicator backend
+  plus XEmbed fallback for tint2 (not `ksni`, which needs StatusNotifierItem), `notify-rust`
+  (Linux), `tauri-winrt-notification` (Windows).
+  Superseded: the task list said tray-icon/ksni; the builder chose tray-icon only (see src/gui.rs).
+- 2026-11-04: Pairing: one PC shows an 8-digit code (tray "Pair..." or `synergy-dragndrop pair`),
+  the other runs `synergy-dragndrop pair <host> <code>`; one attempt, 120 s. The result is a
+  `peer` file (`<host> <secret-hex>`, mode 0600 on Linux) in the config dir
+  (`~/.config/synergy-dragndrop/` or `%APPDATA%\synergy-dragndrop\`).
+- 2026-11-05: Linux autostart: the XDG entry `~/.config/autostart/synergy-dragndrop.desktop` when
+  `openbox-xdg-autostart` exists, else a marked line (`# synergy-dragndrop`) in
+  `~/.config/openbox/autostart`; never both. Right-click entry in Thunar's Send To
+  (`~/.local/share/Thunar/sendto`), plus Dolphin and Nautilus. Windows: scheduled task and a
+  Send To shortcut.
+  Superseded: the 2026-11-04 Linux line said "autostart also via ~/.config/openbox/autostart";
+  it is one mechanism or the other.
+- 2026-11-05: Known v1 limitations, accepted: (a) if a later file in a batch fails, earlier files
+  stay saved although the sender sees "not sent" for the whole batch; (b) a peer IP change needs
+  `synergy-dragndrop peer <address>` (or a fixed address in the router); (c) the Linux tray has
+  no tooltip, so the status shows as the first (greyed) tray menu item.
+
 ## Open questions
 
 - (none)
