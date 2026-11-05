@@ -1,0 +1,16 @@
+[package]
+name = "synergy-dragndrop"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# Pairing (SPAKE2) and encrypted sessions (Noise NNpsk0); same choices as synergy-audio.
+snow = { version = "0.10", default-features = false, features = ["default-resolver-crypto"] }
+spake2 = "0.4"
+getrandom = "0.3"
+sha2 = "0.10"
+dirs = "7"
+
+[profile.release]
+strip = true
