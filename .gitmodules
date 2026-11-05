@@ -1,8 +1,0 @@
-[submodule "synergy-audio"]
-	path = synergy-audio
-	url = https://github.com/ztancrell/synergy-audio.git
-	branch = master
-[submodule "synergy-dragndrop"]
-	path = synergy-dragndrop
-	url = https://github.com/ztancrell/synergy-dragndrop.git
-	branch = build
