@@ -35,8 +35,8 @@ finished and `$LASTEXITCODE` is unreliable; use `.\synergy-dragndrop.exe pair ..
 ## Pairing
 
 Pair once; the pairing is remembered on both PCs. The two PCs must be able to reach each other on
-TCP port **24851**, so allow that port in the firewall of the PC that receives (the installers
-will do this; until then do it by hand).
+TCP port **24851**, so allow that port in the firewall of the PC that receives (the Windows installer
+does this; the Linux installer comes later, until then run `sudo ufw allow 24851/tcp`).
 
 1. On PC 1 run `synergy-dragndrop pair`. It prints a code like `1234-5678` and the command to
    run on the other PC. The code works for one attempt and expires after 2 minutes.

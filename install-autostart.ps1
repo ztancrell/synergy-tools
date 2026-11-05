@@ -16,6 +16,7 @@ $RuleName = "synergy-dragndrop (TCP 24851)"
 $src = Join-Path $PSScriptRoot "synergy-dragndrop.exe"
 $dir = Join-Path $env:LOCALAPPDATA "synergy-dragndrop"
 $exe = Join-Path $dir "synergy-dragndrop.exe"
+$exeQ = $exe.Replace("'", "''")  # for single-quoted strings
 $lnk = Join-Path $env:APPDATA "Microsoft\Windows\SendTo\Send to other PC.lnk"
 
 if (-not (Test-Path -LiteralPath $src)) {
@@ -30,7 +31,10 @@ Get-Process -Name "synergy-dragndrop" -ErrorAction SilentlyContinue | Stop-Proce
 Start-Sleep -Seconds 1
 
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Copy-Item -LiteralPath $src -Destination $exe -Force
+# Rerun from the install folder: source is the target already.
+if ((Resolve-Path -LiteralPath $src).Path -ne $exe) {
+    Copy-Item -LiteralPath $src -Destination $exe -Force
+}
 Unblock-File -LiteralPath $exe  # drop the downloaded-from-internet mark a release zip leaves
 
 if ($Peer) {
@@ -79,7 +83,7 @@ $sc.Save()
 $ruleOk = [bool](Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue)
 if (-not $ruleOk) {
     $cmd = "New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Protocol TCP " +
-        "-LocalPort 24851 -Program '$exe' -Profile Private,Public -Action Allow | Out-Null"
+        "-LocalPort 24851 -Program '$exeQ' -Profile Private,Public -Action Allow | Out-Null"
     try {
         Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden `
             -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $cmd
@@ -101,7 +105,7 @@ if ($ruleOk) {
 } else {
     Write-Host "  WARNING: firewall rule '$RuleName' is missing, so this PC cannot receive files."
     Write-Host "  Rerun this script and accept the administrator prompt, or run as administrator:"
-    Write-Host "    New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Protocol TCP -LocalPort 24851 -Program '$exe' -Profile Private,Public -Action Allow"
+    Write-Host "    New-NetFirewallRule -DisplayName '$RuleName' -Direction Inbound -Protocol TCP -LocalPort 24851 -Program '$exeQ' -Profile Private,Public -Action Allow"
 }
 if (Get-Process -Name "synergy-dragndrop" -ErrorAction SilentlyContinue) {
     Write-Host "It is running now (tray icon; Task Manager > Details > synergy-dragndrop.exe)."
