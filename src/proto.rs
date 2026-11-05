@@ -67,7 +67,7 @@ impl Msg {
             b'F' if rest.len() >= 8 => {
                 Msg::File { size: u64::from_be_bytes(rest[..8].try_into().unwrap()), name: text(&rest[8..])? }
             }
-            b'D' => Msg::Data(rest.to_vec()),
+            b'D' if rest.len() <= CHUNK => Msg::Data(rest.to_vec()),
             b'E' if rest.is_empty() => Msg::End,
             b'K' if rest.len() == 2 => Msg::Done { saved: u16::from_be_bytes([rest[0], rest[1]]) },
             b'X' => Msg::Fail(text(rest)?),
@@ -111,6 +111,9 @@ impl<S: Read + Write> Session<S> {
 
     pub fn send(&mut self, msg: &Msg) -> Result<(), String> {
         let plain = msg.encode();
+        if plain.len() > 65535 - 16 {
+            return Err(format!("message too large ({} bytes)", plain.len()));
+        }
         let mut buf = vec![0; plain.len() + 16];
         let n = self.t.write_message(&plain, &mut buf).map_err(|e| format!("encrypt failed: {e}"))?;
         write_frame(&mut self.s, &buf[..n]).map_err(|e| format!("send failed: {e}"))
@@ -149,6 +152,7 @@ mod tests {
         assert!(Msg::decode(&[]).is_err());
         assert!(Msg::decode(b"F\x00").is_err());
         assert!(Msg::decode(b"Z").is_err());
+        assert!(Msg::decode(&[&[b'D'][..], &vec![0; CHUNK + 1]].concat()).is_err());
         assert!(Msg::decode(b"B\x00").is_err());
         assert!(Msg::decode(b"K\x00").is_err());
         assert!(Msg::decode(b"Ex").is_err());
@@ -188,6 +192,17 @@ mod tests {
         assert_eq!(server.recv().unwrap(), file);
         server.send(&Msg::Done { saved: 1 }).unwrap();
         assert_eq!(client.recv().unwrap(), Msg::Done { saved: 1 });
+    }
+
+    #[test]
+    fn chunk_fits_and_oversize_is_refused() {
+        let (c, s) = pair();
+        let h = serve(s, [7; 32]);
+        let mut client = Session::client(c, &[7; 32]).unwrap();
+        let mut server = h.join().unwrap().unwrap();
+        client.send(&Msg::Data(vec![9; CHUNK])).unwrap();
+        assert_eq!(server.recv().unwrap(), Msg::Data(vec![9; CHUNK]));
+        assert!(client.send(&Msg::Fail("x".repeat(70_000))).unwrap_err().contains("too large"));
     }
 
     #[test]
