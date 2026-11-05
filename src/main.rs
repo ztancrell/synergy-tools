@@ -27,17 +27,6 @@ fn downloads() -> Result<PathBuf, String> {
     dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())
 }
 
-/// This PC's LAN address as the other PC would reach it, else the PC name.
-fn local_address() -> String {
-    // ponytail: picks the interface of the default route; a multi-homed PC may need the user to substitute.
-    let probe = || {
-        let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-        s.connect("192.0.2.1:9").ok()?; // no packet is sent
-        Some(s.local_addr().ok()?.ip().to_string())
-    };
-    probe().unwrap_or_else(config::this_pc_name)
-}
-
 fn show(e: &Event) -> String {
     match e {
         Event::Received(r) => {
@@ -55,7 +44,7 @@ fn pair_host() -> Result<(), String> {
     let l = Listener::bind(PORT, downloads()?)?;
     let code = pair::new_code();
     println!("Pairing code: {}", pair::show_code(&code));
-    println!("On the other PC run:  synergy-dragndrop pair {} {}", local_address(), pair::show_code(&code));
+    println!("On the other PC run:  synergy-dragndrop pair {} {}", config::local_address(), pair::show_code(&code));
     let pairing = l.pairing.clone();
     *pairing.lock().unwrap() = Some((code, Instant::now()));
     std::thread::spawn(|| {

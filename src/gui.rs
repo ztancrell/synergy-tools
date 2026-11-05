@@ -1,13 +1,15 @@
 //! Drop window: a small always-on-top window; files dropped on it are sent to the paired PC.
 //! State is shown in the window title (no drawing crate).
 
-use crate::{config, notify, transfer};
+use crate::{config, notify, pair, transfer};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tao::dpi::{LogicalSize, PhysicalPosition};
-use tao::event::{Event, WindowEvent};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::WindowBuilder;
+use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Requested size; the WM/GTK may enlarge it (200x200 on Openbox), so placement uses the real size.
 const SIZE: f64 = 160.0;
@@ -15,9 +17,44 @@ const SIZE: f64 = 160.0;
 const MARGIN: f64 = 48.0;
 const RESET_AFTER: Duration = Duration::from_secs(3);
 
-/// Messages from worker threads to the event loop (later tasks add variants).
+/// How long the tray stays red after an error.
+const ERROR_FOR: Duration = Duration::from_secs(5);
+
+/// Messages from worker threads and the tray menu to the event loop.
 pub enum UserEvent {
     SendDone(usize, Result<String, String>),
+    Listener(transfer::Event),
+    Menu(MenuId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TrayState {
+    Unpaired,
+    Idle,
+    Busy,
+    Error,
+}
+
+/// 32x32 filled rounded square: grey / green / blue / red.
+fn icon_rgba(state: TrayState) -> Vec<u8> {
+    let [r, g, b] = match state {
+        TrayState::Unpaired => [128, 128, 128],
+        TrayState::Idle => [46, 160, 67],
+        TrayState::Busy => [47, 111, 237],
+        TrayState::Error => [215, 58, 73],
+    };
+    const N: i32 = 32;
+    const R: i32 = 8; // corner radius
+    let mut px = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            // Distance of the pixel centre past the corner circle's centre, per axis.
+            let (dx, dy) = ((R - x).max(x - (N - 1 - R)).max(0), (R - y).max(y - (N - 1 - R)).max(0));
+            let a = if dx * dx + dy * dy <= R * R { 255 } else { 0 };
+            px.extend([r, g, b, a]);
+        }
+    }
+    px
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,9 +122,39 @@ fn place<T>(window: &tao::window::Window, event_loop: &tao::event_loop::EventLoo
     }
 }
 
+fn tray_icon_for(s: TrayState) -> Icon {
+    Icon::from_rgba(icon_rgba(s), 32, 32).expect("32x32 RGBA")
+}
+
+fn tooltip(paired: Option<&str>) -> String {
+    match paired {
+        Some(h) => format!("synergy-dragndrop: paired with {h}"),
+        None => "synergy-dragndrop: not paired".into(),
+    }
+}
+
 pub fn run() -> Result<(), String> {
+    // Single instance: the port is the lock.
+    let dir = dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())?;
+    let listener = transfer::Listener::bind(crate::PORT, dir).inspect_err(|e| notify::error(e))?;
+    let pairing = listener.pairing.clone();
+
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
+    {
+        let proxy = proxy.clone();
+        std::thread::spawn(move || {
+            listener.run(move |e| {
+                let _ = proxy.send_event(UserEvent::Listener(e));
+            })
+        });
+    }
+    {
+        let proxy = proxy.clone();
+        MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+            let _ = proxy.send_event(UserEvent::Menu(e.id));
+        }));
+    }
     let window = WindowBuilder::new()
         .with_title(title_for(&DropState::Idle))
         .with_inner_size(LogicalSize::new(SIZE, SIZE))
@@ -95,18 +162,38 @@ pub fn run() -> Result<(), String> {
         .with_always_on_top(true)
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
+    let (toggle, pair_item, quit) = (
+        MenuItem::new("Hide drop window", true, None),
+        MenuItem::new("Pair…", true, None),
+        MenuItem::new("Quit", true, None),
+    );
+    let menu = Menu::new();
+    menu.append_items(&[&toggle, &pair_item, &quit]).map_err(|e| format!("can't build the tray menu: {e}"))?;
+    let mut tray: Option<TrayIcon> = None;
     let mut pending: Vec<PathBuf> = Vec::new();
     let mut t = Tracker::default();
     let mut reset_at: Option<Instant> = None;
+    let mut error_until: Option<Instant> = None;
+    // Pairing code shown in the title until it expires.
+    let mut code: Option<(String, Instant)> = None;
+    let mut visible = true;
     let mut shown = title_for(&DropState::Idle);
+    let mut shown_tray: Option<(TrayState, Option<String>)> = None;
 
     event_loop.run(move |event, target, flow| {
         match event {
+            // The tray must be created once the loop runs (GTK main thread).
+            Event::NewEvents(StartCause::Init) => {
+                match TrayIconBuilder::new().with_menu(Box::new(menu.clone())).with_icon(tray_icon_for(TrayState::Unpaired)).build() {
+                    Ok(i) => tray = Some(i),
+                    Err(e) => notify::error(&format!("can't create the tray icon: {e}")),
+                }
+            }
             Event::WindowEvent { event, .. } => match event {
-                // Task 8 (tray) switches this to hiding the window.
                 WindowEvent::CloseRequested => {
-                    *flow = ControlFlow::Exit;
-                    return;
+                    window.set_visible(false);
+                    visible = false;
+                    toggle.set_text("Show drop window");
                 }
                 // Not user-resizable, so a resize is the WM/GTK settling the real size: re-place.
                 WindowEvent::Resized(_) => place(&window, target),
@@ -133,32 +220,119 @@ pub fn run() -> Result<(), String> {
             Event::UserEvent(UserEvent::SendDone(n, res)) => {
                 match &res {
                     Ok(m) => notify::info(m),
-                    Err(e) => notify::error(e),
+                    Err(e) => {
+                        notify::error(e);
+                        error_until = Some(Instant::now() + ERROR_FOR);
+                    }
                 }
                 t.finish(n, res.is_ok());
                 if t.in_flight == 0 {
                     reset_at = Some(Instant::now() + RESET_AFTER);
                 }
             }
-            Event::NewEvents(_) if reset_at.is_some_and(|d| Instant::now() >= d) => {
-                reset_at = None;
-                t.result = None;
+            Event::UserEvent(UserEvent::Listener(e)) => match e {
+                transfer::Event::Received(r) => notify::received(&r),
+                transfer::Event::Paired(ip) => {
+                    code = None;
+                    notify::info(&format!("Paired with {ip}"));
+                }
+                transfer::Event::PairFailed(e) => {
+                    code = None;
+                    notify::error(&e);
+                    error_until = Some(Instant::now() + ERROR_FOR);
+                }
+                transfer::Event::Error(e) => {
+                    notify::error(&e);
+                    error_until = Some(Instant::now() + ERROR_FOR);
+                }
+                // A stranger knocking is logged by the listener's caller in the CLI; here it is only noise.
+                transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not the paired PC"),
+            },
+            Event::UserEvent(UserEvent::Menu(id)) => {
+                if id == *quit.id() {
+                    *flow = ControlFlow::Exit;
+                    return;
+                } else if id == *toggle.id() {
+                    visible = !visible;
+                    window.set_visible(visible);
+                    toggle.set_text(if visible { "Hide drop window" } else { "Show drop window" });
+                } else if id == *pair_item.id() {
+                    let c = pair::new_code();
+                    let now = Instant::now();
+                    *pairing.lock().unwrap_or_else(|e| e.into_inner()) = Some((c.clone(), now));
+                    notify::info(&format!(
+                        "On the other PC run: synergy-dragndrop pair {} {}",
+                        config::local_address(),
+                        pair::show_code(&c)
+                    ));
+                    code = Some((c, now));
+                }
+            }
+            Event::NewEvents(_) => {
+                let now = Instant::now();
+                if reset_at.is_some_and(|d| now >= d) {
+                    reset_at = None;
+                    t.result = None;
+                }
+                if error_until.is_some_and(|d| now >= d) {
+                    error_until = None;
+                }
+                if code.as_ref().is_some_and(|(_, at)| at.elapsed() >= transfer::PAIR_WINDOW) {
+                    code = None;
+                }
             }
             _ => {}
         }
-        let title = title_for(&t.state());
+        let st = t.state();
+        let title = match (&code, &st) {
+            (Some((c, _)), DropState::Idle | DropState::Done(_)) => format!("Pairing code {}", pair::show_code(c)),
+            _ => title_for(&st),
+        };
         if title != shown {
             window.set_title(&title);
             shown = title;
         }
+        let peer = config::load_peer().ok().map(|p| p.host);
+        let ts = match (&peer, error_until, t.in_flight) {
+            (_, Some(_), _) => TrayState::Error,
+            (None, ..) => TrayState::Unpaired,
+            (_, _, 0) => TrayState::Idle,
+            _ => TrayState::Busy,
+        };
+        if shown_tray.as_ref() != Some(&(ts, peer.clone())) {
+            if let Some(i) = &tray {
+                let _ = i.set_icon(Some(tray_icon_for(ts)));
+                let _ = i.set_tooltip(Some(tooltip(peer.as_deref())));
+            }
+            shown_tray = Some((ts, peer));
+        }
         // Computed after handling, so a timer armed above takes effect at once.
-        *flow = reset_at.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW)].into_iter().flatten().min();
+        *flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_size() {
+        assert_eq!(icon_rgba(TrayState::Idle).len(), 32 * 32 * 4);
+    }
+
+    #[test]
+    fn icon_states_differ() {
+        let all = [TrayState::Unpaired, TrayState::Idle, TrayState::Busy, TrayState::Error];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(icon_rgba(*a), icon_rgba(*b));
+            }
+        }
+        let px = icon_rgba(TrayState::Idle);
+        assert_eq!(px[3], 0, "corner is transparent");
+        assert_eq!(px[(16 * 32 + 16) * 4 + 3], 255, "centre is opaque");
+    }
 
     #[test]
     fn titles() {

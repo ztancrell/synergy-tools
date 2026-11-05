@@ -74,6 +74,17 @@ pub fn remove_peer() -> Result<bool, String> {
     }
 }
 
+/// This PC's LAN address as the other PC would reach it, else the PC name.
+pub fn local_address() -> String {
+    // ponytail: picks the interface of the default route; a multi-homed PC may need the user to substitute.
+    let probe = || {
+        let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        s.connect("192.0.2.1:9").ok()?; // no packet is sent
+        Some(s.local_addr().ok()?.ip().to_string())
+    };
+    probe().unwrap_or_else(this_pc_name)
+}
+
 /// Name shown in the other PC's notifications.
 pub fn this_pc_name() -> String {
     #[cfg(windows)]

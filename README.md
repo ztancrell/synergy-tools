@@ -30,12 +30,22 @@ secret is kept); `synergy-dragndrop unpair` forgets the pairing.
 Run `synergy-dragndrop` with no arguments: a small window titled `Drop files to send` opens at the
 bottom-right of the screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox). Drag files onto it (from Explorer, Thunar, ...) and they go to the
 paired PC; the title shows `Release to send`, `Sending 2 files...`, then `Sent` or `Not sent`, and
-a notification gives the result. Closing the window quits the app for now (the tray icon will hide
-it instead). On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. Linux
-needs the GTK 3 runtime libraries (`libgtk-3-0`).
+a notification gives the result. Closing the window only hides it (tray menu: Show drop window; Quit ends the app). On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. Linux
+needs the GTK 3 runtime libraries (`libgtk-3-0`) and `libayatana-appindicator3-1` for the tray icon.
 
 Tip for KDE/GNOME Wayland, where apps can't force "always on top": right-click the title bar, More
 Actions, Keep Above Others (or a Window Rule matching the title `Drop files to send`).
+
+## Tray icon
+
+The app lives in the system tray on both PCs (status only: it is not a drop target). Colours:
+grey = not paired, green = paired and idle, blue = sending, red for 5 seconds after an error;
+the tooltip says `paired with <host>` or `not paired`. Menu: `Hide drop window` / `Show drop
+window`, `Pair…` (shows `Pairing code 1234-5678` in the window title for 2 minutes and in a
+notification with the command to run on the other PC), `Quit`. Starting a second copy fails with a
+notification, since the first one holds port 24851. On Linux the icon uses libappindicator
+(`libayatana-appindicator3`, falls back to an XEmbed icon for panels like tint2 without
+StatusNotifierItem support); the Linux build and the CI job need `libayatana-appindicator3-dev`.
 
 ## Command line
 
