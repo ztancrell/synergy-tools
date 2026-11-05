@@ -20,6 +20,8 @@ strip = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
+# Same gtk as tao/tray-icon (Cargo.lock) so no second copy is built; used for file drops.
+gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"

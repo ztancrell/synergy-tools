@@ -27,6 +27,69 @@ pub enum UserEvent {
     /// The listener thread died: this app can't receive any more.
     Fatal(String),
     Menu(MenuId),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Linux: a drag is over the window (tao has no Linux drop events, so GTK reports them).
+    Hover(bool),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Linux: one finished drop, the whole batch.
+    Dropped(Vec<PathBuf>),
+}
+
+/// `text/uri-list` body -> local paths. Only `file://` URIs (host empty or `localhost`) count.
+#[cfg(target_os = "linux")]
+fn parse_uri_list(s: &str) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    s.lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("file://")?;
+            let path = rest.strip_prefix("localhost").unwrap_or(rest);
+            if !path.starts_with('/') {
+                return None;
+            }
+            let b = path.as_bytes();
+            let (mut out, mut i) = (Vec::new(), 0);
+            while i < b.len() {
+                let hex = |c: u8| (c as char).to_digit(16);
+                match (b[i], b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c))) {
+                    (b'%', Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    (c, ..) => {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
+        })
+        .collect()
+}
+
+/// Wire GTK drag-and-drop onto the window; results reach the event loop as user events.
+#[cfg(target_os = "linux")]
+fn gtk_drop(window: &tao::window::Window, proxy: tao::event_loop::EventLoopProxy<UserEvent>) {
+    use gtk::prelude::*;
+    use tao::platform::unix::WindowExtUnix;
+    let w = window.gtk_window();
+    w.drag_dest_set(
+        gtk::DestDefaults::ALL,
+        &[gtk::TargetEntry::new("text/uri-list", gtk::TargetFlags::OTHER_APP, 0)],
+        gtk::gdk::DragAction::COPY,
+    );
+    let p = proxy.clone();
+    w.connect_drag_motion(move |_, _, _, _, _| {
+        let _ = p.send_event(UserEvent::Hover(true));
+        true
+    });
+    let p = proxy.clone();
+    w.connect_drag_leave(move |_, _, _| {
+        let _ = p.send_event(UserEvent::Hover(false));
+    });
+    w.connect_drag_data_received(move |_, _, _, _, data, _, _| {
+        let files = parse_uri_list(&String::from_utf8_lossy(&data.data()));
+        let _ = proxy.send_event(UserEvent::Dropped(files));
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -202,6 +265,8 @@ fn start() -> Result<(), String> {
         .with_always_on_top(true)
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
+    #[cfg(target_os = "linux")]
+    gtk_drop(&window, proxy.clone());
     let (status, toggle, pair_item, quit) = (
         MenuItem::new(status_text(None), false, None),
         MenuItem::new("Hide drop window", true, None),
@@ -263,6 +328,11 @@ fn start() -> Result<(), String> {
                 }
                 _ => {}
             },
+            Event::UserEvent(UserEvent::Hover(on)) => t.hover = on,
+            Event::UserEvent(UserEvent::Dropped(files)) => {
+                t.hover = false;
+                pending.extend(files);
+            }
             // End of an event batch: all files of one drop have arrived.
             Event::MainEventsCleared if !pending.is_empty() => {
                 let files = std::mem::take(&mut pending);
@@ -385,6 +455,19 @@ fn start() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uri_list() {
+        use std::os::unix::ffi::OsStrExt;
+        let l = parse_uri_list(
+            "# comment\r\nfile:///a/b%20c.txt\r\n\r\nfile://localhost/x/y\nhttp://h/z\nfile://other/q\nfile:///bad%FF\n",
+        );
+        assert_eq!(l.len(), 3);
+        assert_eq!(l[0], PathBuf::from("/a/b c.txt"));
+        assert_eq!(l[1], PathBuf::from("/x/y"));
+        assert_eq!(l[2].as_os_str().as_bytes(), b"/bad\xff");
+    }
 
     #[test]
     fn tray_state_precedence() {
