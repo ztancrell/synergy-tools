@@ -9,7 +9,7 @@ Files land in the Downloads folder; transfers are authenticated and encrypted af
 pairing with an 8-digit code.
 
 **Status: in development.** Pairing, sending, the drop window and the tray app work (below);
-the Windows installer is below, the Linux installer is not written yet.
+the Windows and Linux installers are below.
 
 ## Install on Windows
 
@@ -32,11 +32,21 @@ finished and `$LASTEXITCODE` is unreliable; use `.\synergy-dragndrop.exe pair ..
 `Start-Process -Wait -NoNewWindow .\synergy-dragndrop.exe -ArgumentList ...`, or cmd's
 `start /wait`. Without a terminal (Send To) results appear as notifications.
 
+## Install on Linux
+
+From a source checkout (builds with cargo) or an extracted release folder (uses the bundled binary), run `./install-autostart.sh`. It installs:
+
+- `~/.local/bin/synergy-dragndrop` and starts the tray app now and at every login. Autostart is one mechanism only: the XDG entry `~/.config/autostart/synergy-dragndrop.desktop` (Openbox runs it through `openbox-xdg-autostart`); only if `~/.config/openbox/autostart` exists and no `openbox-xdg-autostart` is found, it appends the line `<bin> & # synergy-dragndrop` there instead.
+- Right-click "Send to other PC": Thunar (`~/.local/share/Thunar/sendto`, shown as Send To for files), plus Dolphin (`kio/servicemenus`) and Nautilus (`nautilus/scripts`).
+- A firewall rule for TCP 24851 in ufw or firewalld, if one is active. Only this step asks for your sudo password.
+
+`./uninstall-autostart.sh` removes exactly those items (not your pairing config or the firewall rule; it prints the command to close the port).
+
 ## Pairing
 
 Pair once; the pairing is remembered on both PCs. The two PCs must be able to reach each other on
 TCP port **24851**, so allow that port in the firewall of the PC that receives (the Windows installer
-does this; the Linux installer comes later, until then run `sudo ufw allow 24851/tcp`).
+and the Linux installer do this).
 
 1. On PC 1 run `synergy-dragndrop pair`. It prints a code like `1234-5678` and the command to
    run on the other PC. The code works for one attempt and expires after 2 minutes.
