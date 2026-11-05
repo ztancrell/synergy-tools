@@ -8,9 +8,9 @@ latency. The stream is encrypted and authenticated: the two machines are paired 
 
 **Status: early.** Part of `synergy-tools` (formerly the standalone synergy-audio): Windows
 sender → Linux receiver, terminal only (`synergy-tools audio send|receive|unmute`; the tray
-starts audio by itself in a later task). One pairing covers audio and files:
-see [Pairing](#pairing-and-encryption). Not compatible with the old synergy-audio binaries
-(different keys and pairing). No Synergy integration, no switching direction, no self-update yet.
+starts audio by itself later). One pairing covers audio and files
+([Pairing](#pairing-and-encryption)). Not compatible with the old synergy-audio binaries
+(different keys and pairing). No switching direction, no self-update yet.
 
 ## Download and install
 
@@ -117,7 +117,7 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 ### Every update after that, autostart
 
 Superseded: dev scripts, Linux and Windows autostart and the update script are gone; the
-tray starts audio by itself (Task 6) and installers come in phase 3. Rebuild and copy by
+tray starts audio by itself and installers come in phase 3. Rebuild and copy by
 hand as in steps 5-8.
 
 ### Auto-mute of the speakers
@@ -136,8 +136,7 @@ with no sound anywhere. Nothing to set up:
   mute them, it leaves them alone and never unmutes them. If you unmute while the receiver
   is running, the sender mutes again within half a second; close the receiver (or the
   sender) to get the speakers back.
-- **If the sender is killed** (Task Manager, `Stop-Process`, stopping the scheduled task,
-  a crash), it can't unmute. It leaves a marker file,
+- **If the sender is killed** (Task Manager, `Stop-Process`, a crash), it can't unmute. It leaves a marker file,
   `%LOCALAPPDATA%\synergy-tools\muted-by-us`, while it has the speakers muted; the next
   start of the sender sees it and unmutes first, and `synergy-tools.exe audio unmute`
   does the same. Ctrl+C
@@ -198,10 +197,9 @@ connection allows a smaller buffer and less delay.
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
   acks are under 1.5 s old, the stream isn't stopped and auto-mute is on (always on in the
   CLI); it unmutes when any of that ends, and when `send` is told to quit; see [Auto-mute](#auto-mute-of-the-speakers). This runs on
-  the keepalive thread, never in the capture callback. On macOS and Linux the sender only
+  the keepalive thread, never in the capture callback. On Linux the sender only
   reports what Windows would do.
-- The sender captures the default output device (WASAPI loopback on Windows, CoreAudio
-  loopback on macOS 14.6+). More than
+- The sender captures the default output device (WASAPI loopback on Windows). More than
   two channels: it sends only front left/right. Mono is copied to both channels.
 - The capture callback never sends on the network itself (a stalled send would make it miss
   the audio deadline). It puts packets in a queue of 20 packets (100 ms), and a separate
@@ -225,8 +223,9 @@ Details (SPAKE2 with the code, the partner list, files and ports) are in
 [files.md](files.md#pairing). Pairing gives both sides a 32-byte secret and an 8-byte id
 (the audio peer id). The receiver accepts every partner in the list (`partners` file in
 `~/.config/synergy-tools/` on Linux, `%APPDATA%\synergy-tools\` on Windows) and plays one at
-a time: two senders running at once would take turns. `audio send <host>` picks the partner
-by name, `name/os` or host. `audio send` and `audio receive` without a pairing exit with a
+a time: two senders running at once would take turns. `audio send <target>` picks the partner
+by name, `name/os` or host and connects to that partner's stored address (UDP port 24850,
+or the `:port` you add to the target). `audio send` and `audio receive` without a pairing exit with a
 message that points at `synergy-tools pair`.
 
 Superseded: the audio-only UDP pairing (`synergy-audio pair`, `senders/<id>` and `receiver`
@@ -288,7 +287,7 @@ or `send: 0 packets/s, queue-full dropped 0, send errors 4, rejected 0, receiver
 Until the handshake is done (`send: encrypted session with the receiver started`) it sends
 no audio, so packets/s stays 0.
 The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
-failed: ...`, or on macOS and Linux `no muting on this OS (Windows would be muted)`. Send errors are
+failed: ...`, or on Linux `no muting on this OS (Windows would be muted)`. Send errors are
 normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate/replayed packets
 dropped, packets rejected (failed to authenticate), and trims. If underruns keep rising, raise `--buffer-ms`.
 

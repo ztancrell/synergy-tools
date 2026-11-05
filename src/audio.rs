@@ -336,7 +336,7 @@ fn config_48k(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
             format!(
                 "device '{device}' runs at {} Hz and can't do {RATE} Hz. \
                  Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
-                 macOS: Audio MIDI Setup; Linux/PipeWire: default.clock.rate = 48000) and retry.",
+                 Linux/PipeWire: default.clock.rate = 48000) and retry.",
                 def.sample_rate()
             )
         })
@@ -370,12 +370,21 @@ pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
     })
 }
 
-/// CLI `audio send`: the partner named by `target`'s host part, auto-mute on, runs until killed.
+/// "host" or "host:port" (port digits, exactly one ':') to (host, port); anything else is all host.
+fn split_port(t: &str) -> (&str, Option<u16>) {
+    match t.split_once(':') {
+        Some((h, p)) if !p.contains(':') && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => (h, p.parse().ok()),
+        _ => (t, None),
+    }
+}
+
+/// CLI `audio send`: `target` is a partner name, `name/os` or host, optionally with `:port`.
+/// Connects to the partner's stored host (its address may carry a files port, which is ignored).
 pub fn run_send(target: &str) -> Result<(), String> {
     let partners = config::load_partners()?;
-    let host = target.rsplit_once(':').map_or(target, |(h, _)| h);
-    let p = config::find(&partners, host)?;
-    let addr = config::resolve(target, PORT)?;
+    let (key, port) = split_port(target);
+    let p = config::find(&partners, key)?;
+    let addr = config::resolve(split_port(&p.host).0, port.unwrap_or(PORT))?;
     say!("send: paired with {}", p.name);
     send(addr, p.id, p.secret, Shared::new(true), Arc::new(AtomicBool::new(false)))
 }
@@ -889,6 +898,15 @@ mod tests {
         assert_eq!(pcm.len(), 960);
         assert_eq!(pcm_samples(&pcm), Some(samples));
         assert_eq!(pcm_samples(&pcm[..9]), None);
+    }
+
+    #[test]
+    fn target_splits_into_key_and_port() {
+        assert_eq!(split_port("pc"), ("pc", None));
+        assert_eq!(split_port("10.0.0.2:24860"), ("10.0.0.2", Some(24860)));
+        assert_eq!(split_port("pc/linux:9"), ("pc/linux", Some(9)));
+        assert_eq!(split_port("fe80::1"), ("fe80::1", None));
+        assert_eq!(split_port("pc:x"), ("pc:x", None));
     }
 
     #[test]
