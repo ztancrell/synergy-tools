@@ -81,6 +81,13 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
   autostart entries (systemd service, XDG/openbox autostart, Windows scheduled tasks,
   Send To shortcut), so the old programs can't hold ports 24850/24851 or show a second
   tray icon.
+  On Windows (user request, 2026-11-05; done by hand on the Boot Camp machine that day),
+  the phase 3 installer removes, in this order: run the old `synergy-audio.exe unmute` if
+  it exists; stop and unregister scheduled tasks `synergy-audio` and `synergy-dragndrop`
+  and kill those processes; delete `%LOCALAPPDATA%\synergy-audio`,
+  `%LOCALAPPDATA%\synergy-dragndrop`, `%APPDATA%\synergy-audio`, `%APPDATA%\synergy-dragndrop`
+  and `%APPDATA%\Microsoft\Windows\SendTo\Send to other PC.lnk`; remove firewall rule
+  `synergy-dragndrop (TCP 24851)` (needs admin).
 - **Linux autostart** = launch the tray at desktop login, which replaces the systemd
   receiver service. Headless audio stays possible through the command line
   (`audio receive`), documented but not installed by default; it must not run at the
