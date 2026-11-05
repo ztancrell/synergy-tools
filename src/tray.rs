@@ -389,7 +389,13 @@ fn start() -> Result<(), String> {
                         .build()
                         .map_err(|e| e.to_string())
                 }))
-                .unwrap_or_else(|_| Err("tray library missing (install libayatana-appindicator3-1)".into()));
+                .unwrap_or_else(|_| {
+                    Err(if cfg!(target_os = "linux") {
+                        "tray library missing (install libayatana-appindicator3-1)".into()
+                    } else {
+                        "tray library failed".to_string()
+                    })
+                });
                 match built {
                     Ok(i) => {
                         tray = Some(i);

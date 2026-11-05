@@ -240,9 +240,9 @@ connection allows a smaller buffer and less delay.
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
   acks are under 1.5 s old, the stream isn't stopped and auto-mute is on (always on in the
   CLI); it unmutes when any of that ends, and when `send` is told to quit; see [Auto-mute](#auto-mute-of-the-speakers). This runs on
-  the keepalive thread, never in the capture callback. On Linux the sender only
+  the keepalive thread, never in the capture callback. On Linux and macOS the sender only
   reports what Windows would do.
-- The sender captures the default output device (WASAPI loopback on Windows). More than
+- The sender captures the default output device (WASAPI loopback on Windows, a CoreAudio process tap on macOS 14.6+). More than
   two channels: it sends only front left/right. Mono is copied to both channels.
 - The capture callback never sends on the network itself (a stalled send would make it miss
   the audio deadline). It puts packets in a queue of 20 packets (100 ms), and a separate
@@ -265,7 +265,7 @@ synergy-tools unpair <name>                    # forget a partner
 Details (SPAKE2 with the code, the partner list, files and ports) are in
 [files.md](files.md#pairing). Pairing gives both sides a 32-byte secret and an 8-byte id
 (the audio peer id). The receiver accepts every partner in the list (`partners` file in
-`~/.config/synergy-tools/` on Linux, `%APPDATA%\synergy-tools\` on Windows) and plays one at
+`~/.config/synergy-tools/` on Linux, `%APPDATA%\synergy-tools\` on Windows, `~/Library/Application Support/synergy-tools/` on macOS) and plays one at
 a time: two senders running at once would take turns. `audio send <target>` picks the partner
 by name, `name/os` or host and connects to that partner's stored address (UDP port 24850,
 or the `:port` you add to the target). `audio send` and `audio receive` without a pairing exit with a
@@ -313,6 +313,8 @@ synergy-tools.exe audio send 192.168.1.20 --log C:\path\audio.log   # unattended
 synergy-tools.exe audio unmute                    # undo auto-mute left by a killed sender
 ```
 
+On macOS, `./synergy-tools audio send <partner>` works the same (no `--log` console notes, no `unmute`).
+
 `synergy-tools --version` prints the version.
 
 `--log <file>` is for running without a terminal (for unattended runs). It writes
@@ -331,7 +333,7 @@ or `send: 0 packets/s, queue-full dropped 0, send errors 4, rejected 0, receiver
 Until the handshake is done (`send: encrypted session with the receiver started`) it sends
 no audio, so packets/s stays 0.
 The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
-failed: ...`, or on Linux `no muting on this OS (Windows would be muted)`. Send errors are
+failed: ...`, or on Linux and macOS `no muting on this OS (Windows would be muted)`. Send errors are
 normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate/replayed packets
 dropped, packets rejected (failed to authenticate), and trims. If underruns keep rising, raise `--buffer-ms`.
 
@@ -342,7 +344,7 @@ Superseded: `dev.sh` and `update.ps1` are gone; build with `cargo build --releas
 ## Firewall
 
 The receiver needs inbound UDP 24850. In the tray it also needs inbound TCP 24851: the
-Windows tray only streams to a Linux partner that answers its presence ping on that port
+Windows and macOS trays only stream to a Linux partner that answers its presence ping on that port
 (pairing and files use it too; see [files.md](files.md#pairing) and
 [Troubleshooting](files.md#troubleshooting)). On the Linux machine, ufw is active (firewalld
 is not). To open both:
@@ -352,8 +354,9 @@ sudo ufw allow 24850/udp
 sudo ufw allow 24851/tcp
 ```
 
-Windows only sends, so its firewall normally needs no change. If Windows asks about network
-access the first time you run it, allow it on private networks.
+Windows and macOS only send, so Windows normally needs no firewall change (if it asks about
+network access the first time you run it, allow it on private networks). The Mac needs inbound
+TCP 24851 for the presence ping; see [files.md](files.md#macos).
 
 ## Releases and CI
 

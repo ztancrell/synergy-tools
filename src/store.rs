@@ -75,7 +75,23 @@ pub fn begin(dir: &Path, name: &str) -> Result<Incoming, String> {
         ads.push(":Zone.Identifier");
         std::fs::write(&ads, "[ZoneTransfer]\r\nZoneId=3\r\n").map_err(|e| format!("cannot mark {name} as downloaded: {e}"))?;
     }
+    // Quarantine: Gatekeeper checks the file before it is opened. xattrs are per inode, so
+    // the hard link in `finish` keeps it. Best effort: a failure doesn't fail the receive.
+    #[cfg(target_os = "macos")]
+    {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        match std::process::Command::new("xattr").args(["-w", "com.apple.quarantine", &quarantine_value(secs)]).arg(&inc.tmp).status() {
+            Ok(s) if s.success() => {}
+            Ok(s) => eprintln!("cannot mark {name} as quarantined: xattr {s}"),
+            Err(e) => eprintln!("cannot mark {name} as quarantined: {e}"),
+        }
+    }
     Ok(inc)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn quarantine_value(unix_secs: u64) -> String {
+    format!("0081;{unix_secs:x};synergy-tools;")
 }
 
 impl Incoming {
@@ -124,6 +140,11 @@ impl Drop for Incoming {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quarantine_value_format() {
+        assert_eq!(super::quarantine_value(255), "0081;ff;synergy-tools;");
+    }
+
     use super::*;
 
     fn tmpdir() -> PathBuf {

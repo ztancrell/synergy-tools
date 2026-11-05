@@ -49,9 +49,9 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
    online; if several are online, the drop window / "Send to" lets the user pick.
    The tray status line lists online partners.
 7. **Platforms: Windows, Linux and macOS** (user decision). macOS gets the full tray:
-   Audio (sender) **and Files**, which means porting file-sending (drop window, tray,
-   a Finder "send" integration in place of Windows' right-click "Send to") to macOS.
-   macOS gets a release artifact and login autostart.
+   Audio (sender) **and Files**, which means porting file-sending (drop window, tray) to
+   macOS. The Finder "send" entry, the macOS release artifact and login autostart are phase 3
+   (see "Decided").
 
 ## Non-goals
 
@@ -65,6 +65,12 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
 - Two tray icons, or a launcher that spawns the old programs as separate processes.
 - Making the user pair twice.
 - Losing the old command-line path for headless/scripted setups.
+
+## Decided (user decisions, 2026-11-05)
+
+- The Finder "send" entry moves to phase 3's installer.
+- Mac notifications are text-only (no click action) until an app bundle exists.
+- The macOS release artifact and login autostart are phase 3.
 
 ## Calls made by Claude (not discussed with the user; check these)
 

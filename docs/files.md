@@ -26,6 +26,10 @@ in the menu bar, with no Dock icon; the drop window has no minimize button. If t
 asks, allow incoming connections (needed for TCP 24851). A Finder send entry comes with phase 3's
 installer; until then drop files on the window or use `synergy-tools files send`.
 
+The first time a file arrives, macOS may ask "Terminal would like to access files in your
+Downloads folder". Allow it: otherwise receives fail with "Operation not permitted" and the
+sender sees "not sent".
+
 ## Pairing
 
 Pair once; the pairing is remembered on both PCs. Pairing with another PC adds it to the list
@@ -87,7 +91,7 @@ Script Editor in System Settings → Notifications; allow them there if none app
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
   5 seconds (the hover tooltip with the same text
-  works on Windows only; Linux trays don't get it). Menu: status line, the audio section
+  works on Windows and macOS; Linux trays don't get it). Menu: status line, the audio section
   ([docs/audio.md](audio.md#in-the-tray)), `Hide drop window` / `Show drop window`, `Pair…`,
   `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
@@ -122,7 +126,7 @@ menu or quit it first.
 
 Received files are saved in your Downloads folder.
 
-- A file is written under a temporary name (`.name.xxxxxxxx.part`, hidden on Linux, visible on
+- A file is written under a temporary name (`.name.xxxxxxxx.part`, hidden on Linux and macOS, visible on
   Windows) and only gets its real name once it has arrived completely, so you never see half a
   file. A crash mid-receive can leave one behind; it is safe to delete and never looks like a
   complete file.
@@ -131,8 +135,9 @@ Received files are saved in your Downloads folder.
 - File names from the other PC are cleaned up: folders in the name are dropped, and characters
   Windows does not allow (`< > : " | ? *`) become `_`.
 - On Windows, received files are marked as downloaded from the internet (Mark of the Web,
-  `ZoneId=3`), so SmartScreen may ask before you open an executable. On Linux, received files
-  are never executable.
+  `ZoneId=3`), so SmartScreen may ask before you open an executable. On macOS, received files carry the
+  `com.apple.quarantine` mark, so Gatekeeper checks them before opening. On Linux and macOS,
+  received files are never executable.
 
 ## Notifications
 
@@ -141,6 +146,7 @@ the error, and a received transfer shows `N files received from <other PC>` (`1 
 ...` for one). Opening the Downloads folder (`xdg-open` on Linux, `explorer.exe` on Windows):
 
 - Windows, KDE, GNOME: click the notification.
+- macOS: no click action (see Daily use).
 - dunst (Openbox): left-click only closes the notification; **middle-click opens Downloads**
   (dunst's default `mouse_middle_click = do_action`).
 
@@ -218,8 +224,8 @@ or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s,
 - The partner id is not secret; it only selects which secret the handshake must prove.
 - Names are bound into the pairing confirmation, so they can't be changed in transit. A name is
   what the other PC says it is (its computer name), not proof of identity.
-- The secrets sit unencrypted in the `partners` file, readable only by you on Linux.
-- Received names are sanitised and files are never overwritten or made executable (Linux).
+- The secrets sit unencrypted in the `partners` file, readable only by you on Linux and macOS.
+- Received names are sanitised and files are never overwritten or made executable (Linux and macOS).
 - LAN only; nothing goes through the internet.
 
 ## License

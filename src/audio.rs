@@ -167,7 +167,7 @@ impl Shared {
 
 // ---------- tray ----------
 
-/// The tray's audio role by platform: Linux plays, Windows streams.
+/// The tray's audio role by platform: Linux plays, Windows and macOS stream.
 pub const RECEIVER: bool = cfg!(target_os = "linux");
 
 /// The sender streams to the first online Linux partner.
