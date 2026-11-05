@@ -445,8 +445,8 @@ fn start() -> Result<(), String> {
                     let c = pair::new_code();
                     let now = Instant::now();
                     *pairing.lock().unwrap_or_else(|e| e.into_inner()) = Some((c.clone(), now));
-                    notify::info(&format!(
-                        "On the other PC run: synergy-dragndrop pair {} {}",
+                    notify::pair_command(&format!(
+                        "synergy-dragndrop pair {} {}",
                         config::local_address(),
                         pair::show_code(&c)
                     ));

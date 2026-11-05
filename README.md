@@ -67,7 +67,8 @@ Pair once; the pairing is remembered on both PCs. The two PCs must reach each ot
 **24851** (the installers open it).
 
 1. On PC 1 either use the tray menu **Pair…** (the code shows in the drop window's title and in a
-   notification, with the command for the other PC) or run `synergy-dragndrop pair`. It prints a
+   notification, with the command for the other PC; clicking that notification copies the command,
+   middle-click on dunst, via `xclip` on Linux) or run `synergy-dragndrop pair`. It prints a
    code like `1234-5678` and the command to run on the other PC. The code works for one attempt
    and expires after 2 minutes.
 2. On PC 2 run `synergy-dragndrop pair <PC 1's address> 1234-5678`
@@ -144,6 +145,9 @@ the error, and a received transfer shows `N files received from <other PC>` (`1 
 - Windows, KDE, GNOME: click the notification.
 - dunst (Openbox): left-click only closes the notification; **middle-click opens Downloads**
   (dunst's default `mouse_middle_click = do_action`).
+
+The same click on the **Pair…** notification copies the pairing command to the clipboard (`xclip`
+on Linux, `clip` on Windows).
 
 If a notification can't be shown, the reason goes to stderr and the transfer is unaffected.
 
