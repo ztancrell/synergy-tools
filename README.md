@@ -28,7 +28,7 @@ secret is kept); `synergy-dragndrop unpair` forgets the pairing.
 ## Drop window
 
 Run `synergy-dragndrop` with no arguments: a small window titled `Drop files to send` opens at the
-bottom-right of the screen. Drag files onto it (from Explorer, Thunar, ...) and they go to the
+bottom-right of the screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox). Drag files onto it (from Explorer, Thunar, ...) and they go to the
 paired PC; the title shows `Release to send`, `Sending 2 files...`, then `Sent` or `Not sent`, and
 a notification gives the result. Closing the window quits the app for now (the tray icon will hide
 it instead). On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. Linux
