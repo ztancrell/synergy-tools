@@ -16,6 +16,8 @@ use tao::window::WindowBuilder;
 use tao::platform::unix::WindowExtUnix as _;
 #[cfg(windows)]
 use tao::platform::windows::WindowExtWindows as _;
+#[cfg(target_os = "macos")]
+use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS as _, WindowExtMacOS as _};
 use tray_icon::menu::{ContextMenu as _, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -324,11 +326,15 @@ fn start() -> Result<(), String> {
             let _ = proxy.send_event(UserEvent::Menu(e.id));
         }));
     }
-    let window = WindowBuilder::new()
+    let builder = WindowBuilder::new()
         .with_title(title_for(&DropState::Idle))
         .with_inner_size(LogicalSize::new(SIZE, SIZE))
         .with_resizable(false)
-        .with_always_on_top(true)
+        .with_always_on_top(true);
+    // macOS: minimizing would send the window to the Dock, which a tray-only app hides.
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_minimizable(false);
+    let window = builder
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
     #[cfg(target_os = "linux")]
@@ -389,7 +395,11 @@ fn start() -> Result<(), String> {
                         tray = Some(i);
                         // Tray-only app: no task list / taskbar entry. Without a tray the
                         // window stays in it, so a minimized window can't become unreachable.
+                        #[cfg(any(target_os = "linux", windows))]
                         let _ = window.set_skip_taskbar(true);
+                        // macOS: menu bar icon only, no Dock icon.
+                        #[cfg(target_os = "macos")]
+                        target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
                     }
                     Err(e) => notify::error(&format!("no tray icon, the drop window's close button now quits: {e}")),
                 }
@@ -460,6 +470,10 @@ fn start() -> Result<(), String> {
                         #[cfg(windows)]
                         unsafe {
                             menu.show_context_menu_for_hwnd(window.hwnd(), None);
+                        }
+                        #[cfg(target_os = "macos")]
+                        unsafe {
+                            menu.show_context_menu_for_nsview(window.ns_view(), None);
                         }
                         picker = Some((menu, items, files));
                     }

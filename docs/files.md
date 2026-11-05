@@ -1,12 +1,12 @@
 # synergy-tools: files
 
-Sends files between a Windows PC and a Linux PC on the same LAN, for machines that share
+Sends files between Windows, macOS and Linux PCs on the same LAN, for machines that share
 keyboard and mouse with Synergy 3 (which cannot drag files across). Both machines run the
 same program: each one can send files to, and receive files from, its paired partners.
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
-**Status:** v0.1.0, part of `synergy-tools` (the root crate of this repo; code in `src/`). Windows <-> Linux, both directions. Not released yet: build from source (see "Build from source").
+**Status:** v0.1.0, part of `synergy-tools` (the root crate of this repo; code in `src/`). Windows, macOS and Linux, any pair, both directions. Not released yet: build from source (see "Build from source").
 
 The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME work as extras.
 
@@ -17,6 +17,14 @@ Superseded: install and autostart scripts were removed; phase 3 adds an installe
 The program needs the GTK 3 runtime and the Ayatana appindicator library for the tray icon on Linux:
 Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3` and
 `libayatana-appindicator`.
+
+### macOS
+
+Run it from Terminal: `chmod +x synergy-tools && xattr -d com.apple.quarantine synergy-tools && ./synergy-tools`,
+or `nohup ./synergy-tools >/dev/null 2>&1 &` to be able to close the Terminal window. The icon sits
+in the menu bar, with no Dock icon; the drop window has no minimize button. If the macOS firewall
+asks, allow incoming connections (needed for TCP 24851). A Finder send entry comes with phase 3's
+installer; until then drop files on the window or use `synergy-tools files send`.
 
 ## Pairing
 
@@ -48,7 +56,8 @@ code fails on both sides and the code is spent: start again with a new one.
   exactly one paired partner.
 
 The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 0600) or
-`%APPDATA%\synergy-tools\` (Windows), one line per partner:
+`%APPDATA%\synergy-tools\` (Windows) or `~/Library/Application Support/synergy-tools/` (macOS),
+one line per partner:
 `<id> <host> <secret> <os> <name>`.
 
 ## Daily use
@@ -174,8 +183,9 @@ cargo test
 The binary is `target/release/synergy-tools`. Linux needs `libgtk-3-dev`,
 `libayatana-appindicator3-dev` and `libasound2-dev` (Arch/CachyOS: `gtk3`,
 `libayatana-appindicator` and `alsa-lib`). Windows: a
-native MSVC `cargo build --release`. CI (`.github/workflows/ci.yml`) runs `cargo test` and
-`cargo build --release` on Ubuntu 22.04 and Windows.
+native MSVC `cargo build --release`. macOS: `xcode-select --install` and rustup, then the same
+commands. CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo build --release` on
+Ubuntu 22.04, Windows and macOS (the macOS job builds a universal binary, see the README).
 
 ## How it works
 

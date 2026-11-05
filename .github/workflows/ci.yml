@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTFLAGS: -D warnings
+
 jobs:
   linux:
     runs-on: ubuntu-22.04
@@ -24,3 +27,18 @@ jobs:
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo test
       - run: cargo build --release
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup target add x86_64-apple-darwin
+      - run: cargo test
+      - run: cargo build --release
+      - run: cargo build --release --target x86_64-apple-darwin
+      - run: lipo -create -output synergy-tools target/release/synergy-tools target/x86_64-apple-darwin/release/synergy-tools
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synergy-tools-macos-universal
+          path: synergy-tools
