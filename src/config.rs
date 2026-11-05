@@ -96,6 +96,30 @@ pub fn add_partner_to(dir: &Path, p: Partner) -> Result<(), String> {
     save_partners_to(dir, &ps)
 }
 
+/// Windows auto-mute is on unless the `auto-mute-off` marker exists in `dir`.
+pub fn auto_mute_on_in(dir: &Path) -> bool {
+    !dir.join("auto-mute-off").exists()
+}
+
+pub fn set_auto_mute_in(dir: &Path, on: bool) -> Result<(), String> {
+    let m = dir.join("auto-mute-off");
+    let r = if on {
+        std::fs::remove_file(&m).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+    } else {
+        std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&m, ""))
+    };
+    r.map_err(|e| format!("can't save the auto-mute setting in {}: {e}", dir.display()))
+}
+
+pub fn auto_mute_on() -> bool {
+    config_dir().map_or(true, |d| auto_mute_on_in(&d))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))] // the toggle is Windows-only
+pub fn set_auto_mute(on: bool) -> Result<(), String> {
+    set_auto_mute_in(&config_dir()?, on)
+}
+
 pub fn load_partners() -> Result<Vec<Partner>, String> {
     load_partners_from(&config_dir()?)
 }
@@ -165,6 +189,18 @@ mod tests {
 
     fn partner(name: &str, os: &str, host: &str, secret: u8) -> Partner {
         Partner { id: [secret; 8], host: host.into(), secret: [secret; 32], os: os.into(), name: name.into() }
+    }
+
+    #[test]
+    fn auto_mute_default_on_and_saved() {
+        let d = tmp();
+        assert!(auto_mute_on_in(&d), "fresh dir: on");
+        set_auto_mute_in(&d, false).unwrap();
+        assert!(!auto_mute_on_in(&d));
+        set_auto_mute_in(&d, true).unwrap();
+        assert!(auto_mute_on_in(&d));
+        assert!(!d.join("auto-mute-off").exists(), "marker gone");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

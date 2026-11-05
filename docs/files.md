@@ -68,8 +68,9 @@ The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
   5 seconds (the hover tooltip with the same text
-  works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
-  `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
+  works on Windows only; Linux trays don't get it). Menu: status line, the audio section
+  ([docs/audio.md](audio.md#in-the-tray)), `Hide drop window` / `Show drop window`, `Pair…`,
+  `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
   exits. Starting a second copy fails with a notification, since the first one holds port 24851.
   On Linux the icon uses libappindicator (`libayatana-appindicator3`, with a fallback to an XEmbed

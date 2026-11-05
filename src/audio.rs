@@ -142,7 +142,6 @@ pub enum Status {
     Waiting,
     Streaming([u8; 8]), // partner's peer id
     Stopped,
-    #[allow(dead_code)] // set by the tray when send/receive returns an error
     Error(String),
 }
 
@@ -150,7 +149,6 @@ pub enum Status {
 pub struct Shared {
     pub ctl: Mutex<Ctl>,
     pub auto_mute: AtomicBool, // Windows sender: mute the speakers while streaming
-    #[allow(dead_code)] // read by the tray; the CLI prints its own stats lines
     pub status: Mutex<Status>,
 }
 
@@ -159,12 +157,91 @@ impl Shared {
         Arc::new(Shared { ctl: Mutex::default(), auto_mute: AtomicBool::new(auto_mute), status: Mutex::new(Status::Waiting) })
     }
 
-    #[allow(dead_code)] // called by the tray's Stop item
     pub fn set_stopped(&self, on: bool) {
         let mut c = self.ctl.lock().unwrap();
         c.stopped = on;
         c.epoch = c.epoch.saturating_add(1);
     }
+}
+
+// ---------- tray ----------
+
+/// The tray's audio role by platform: Linux plays, Windows streams.
+pub const RECEIVER: bool = cfg!(target_os = "linux");
+
+/// The sender streams to the first online Linux partner.
+pub fn pick_target(online: &[config::Partner]) -> Option<&config::Partner> {
+    online.iter().find(|p| p.os == "linux")
+}
+
+fn set_status(sh: &Shared, st: Status) {
+    *sh.status.lock().unwrap() = st;
+}
+
+/// Sleep `d` in `TICK` steps; false if `quit` was set meanwhile.
+fn wait(d: Duration, quit: &AtomicBool) -> bool {
+    let end = Instant::now() + d;
+    while Instant::now() < end {
+        if quit.load(Relaxed) {
+            return false;
+        }
+        std::thread::sleep(TICK);
+    }
+    !quit.load(Relaxed)
+}
+
+/// Run audio for the tray on background threads and return at once. Receiver: bind UDP `PORT`
+/// once (busy: `Status::Error`, audio stays off) and play, retrying device errors every 10 s.
+/// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes.
+pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
+    std::thread::spawn(move || {
+        if RECEIVER {
+            let sock = match bind_receiver(PORT) {
+                Ok(s) => s,
+                Err(e) => return set_status(&sh, Status::Error(e)),
+            };
+            let never = Arc::new(AtomicBool::new(false));
+            loop {
+                let r = sock.try_clone().map_err(|e| e.to_string()).and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), never.clone()));
+                if let Err(e) = r {
+                    set_status(&sh, Status::Error(e));
+                }
+                std::thread::sleep(RETRY_EVERY);
+            }
+        }
+        // (target id, its quit flag, its thread)
+        let mut running: Option<([u8; 8], Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
+        loop {
+            let want = pick_target(&online.lock().unwrap_or_else(|e| e.into_inner())).cloned();
+            if want.as_ref().map(|p| p.id) != running.as_ref().map(|r| r.0) {
+                if let Some((_, quit, t)) = running.take() {
+                    quit.store(true, Relaxed);
+                    let _ = t.join(); // within about 1 s; unmutes if it muted
+                }
+                match want {
+                    None => set_status(&sh, Status::Waiting),
+                    Some(p) => {
+                        let (quit, sh) = (Arc::new(AtomicBool::new(false)), sh.clone());
+                        let q = quit.clone();
+                        let t = std::thread::spawn(move || loop {
+                            let r = config::resolve(split_port(&p.host).0, PORT).and_then(|a| send(a, p.id, p.secret, sh.clone(), q.clone()));
+                            if q.load(Relaxed) {
+                                return;
+                            }
+                            if let Err(e) = r {
+                                set_status(&sh, Status::Error(e));
+                            }
+                            if !wait(RETRY_EVERY, &q) {
+                                return;
+                            }
+                        });
+                        running = Some((p.id, quit, t));
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
 }
 
 // ---------- packet ----------
@@ -505,7 +582,6 @@ fn keepalive(
     quit: Arc<AtomicBool>,
 ) {
     mute::restore(); // a previous run that was killed may have left the speakers muted
-    mute::on_ctrl_c_restore();
     let mut muted_by_us = false;
     let mut buf = [0u8; 2048];
     let (mut pending, mut heard, mut last_ack_n, mut ka_n) = (None, None::<Instant>, None, 0u64);
@@ -758,7 +834,8 @@ pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc
     let max = target + target.max(10 * SAMPLES_PER_MS);
 
     let mut rx = Rx::new(load_peers);
-    rx.peers = load_peers().unwrap_or_default();
+    // An unreadable config shows as an error (not an endless wait); a later pairing still loads.
+    let load_err = load_peers().map(|p| rx.peers = p).err();
     sock.set_read_timeout(Some(TICK)).map_err(|e| e.to_string())?;
 
     let device = default_output()?;
@@ -821,6 +898,7 @@ pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc
         }
         let streaming = last_audio.is_some_and(|t| t.elapsed() < ACK_FRESH);
         *sh.status.lock().unwrap() = match (stopped, streaming, &rx.cur) {
+            _ if rx.peers.is_empty() && load_err.is_some() => Status::Error(load_err.clone().unwrap()),
             (true, _, _) => Status::Stopped,
             (false, true, Some(s)) => Status::Streaming(s.peer),
             _ => Status::Waiting,
@@ -890,6 +968,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn partner(name: &str, os: &str, id: u8) -> config::Partner {
+        config::Partner { id: [id; 8], host: "h".into(), secret: [id; 32], os: os.into(), name: name.into() }
+    }
+
+    #[test]
+    fn target_is_first_online_linux_partner() {
+        let ps = [partner("W", "windows", 1), partner("A", "linux", 2), partner("B", "linux", 3)];
+        assert_eq!(pick_target(&ps).map(|p| p.name.as_str()), Some("A"));
+        assert!(pick_target(&ps[..1]).is_none());
+    }
+
+    #[test]
+    fn receiver_bind_busy_message() {
+        let held = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let e = bind_receiver(port).unwrap_err();
+        assert!(e.contains("synergy-audio"), "{e}");
+    }
 
     #[test]
     fn pcm_round_trip() {

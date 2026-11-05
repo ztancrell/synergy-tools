@@ -7,10 +7,39 @@ latency. The stream is encrypted and authenticated: the two machines are paired 
 8-digit code ([Pairing and encryption](#pairing-and-encryption)).
 
 **Status: early.** Part of `synergy-tools` (formerly the standalone synergy-audio): Windows
-sender → Linux receiver, terminal only (`synergy-tools audio send|receive|unmute`; the tray
-starts audio by itself later). One pairing covers audio and files
+sender → Linux receiver, from the tray ([In the tray](#in-the-tray)) or the terminal
+(`synergy-tools audio send|receive|unmute`). One pairing covers audio and files
 ([Pairing](#pairing-and-encryption)). Not compatible with the old synergy-audio binaries
 (different keys and pairing). No switching direction, no self-update yet.
+
+## In the tray
+
+Run `synergy-tools` (no arguments) on both PCs once they are paired, and audio streams by
+itself: the Windows tray streams to the first online Linux partner, the Linux tray plays what
+it receives. The role is fixed by platform (Windows sends, Linux receives). If the partner
+goes offline or another one comes online, the sender follows within about 6 s.
+
+The tray menu's audio section:
+
+- `Audio: streaming to <name>` (Windows) / `Audio: receiving from <name>` (Linux),
+  `Audio: waiting for partner`, `Audio: stopped` or `Audio: error: <message>`; refreshed every
+  second. A failed start (no audio device, ...) is retried every 10 s. If UDP 24850 is busy on
+  Linux (an old synergy-audio receiver or a headless `audio receive` still running), the line
+  shows that error and audio stays off until the tray is restarted; files keep working.
+- `Stop audio` / `Start audio`: stops or restarts the stream on both sides; either PC can
+  press it and the other follows within a second. Stopping unmutes the Windows speakers at
+  once if we muted them. Stop is not saved: when both PCs restart, audio streams again.
+  A PC that restarts alone adopts the other side's Stop (whoever changed it last wins), so
+  restarting just one side does not undo a Stop.
+- Windows only: `Auto-mute speakers` (on by default): mute the Windows speakers while the
+  Linux side is playing ([Auto-mute](#auto-mute-of-the-speakers)). Saved across restarts
+  (switched off = a file `auto-mute-off` in the synergy-tools config folder,
+  `%APPDATA%\synergy-tools\`). Switching it off while muted unmutes at once. Quit also
+  unmutes if we muted.
+
+Don't run the headless `synergy-tools audio receive` while the Linux tray runs: both want UDP
+24850. The headless commands also don't answer presence pings, so the other tray doesn't see
+that PC as online and won't stream to it.
 
 ## Download and install
 
@@ -147,7 +176,8 @@ This works because on the author's MacBook Pro capture happens before the volume
 muted speakers go silent and the headphones keep playing. If muting silences your
 headphones too, your sound driver applies the volume before capture, and auto-mute will
 cut your stream while the receiver runs; you'd see `muted by us` in the status line and
-hear nothing. (There's no switch to turn auto-mute off yet; say so if you need one.)
+hear nothing. Switch it off with the tray's `Auto-mute speakers`
+([In the tray](#in-the-tray)); the terminal `audio send` always auto-mutes.
 
 ### Volume and crackles
 

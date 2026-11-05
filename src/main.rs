@@ -147,8 +147,15 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
                 }
             })
         }
-        ["audio", "send", target] => audio::run_send(target)?,
-        ["audio", "send", target, "--log", path] => audio::run_send_logged(target, path)?,
+        // Registered once per process: send restarts (--log retries) must not stack handlers.
+        ["audio", "send", target] => {
+            audio::mute::on_ctrl_c_restore();
+            audio::run_send(target)?
+        }
+        ["audio", "send", target, "--log", path] => {
+            audio::mute::on_ctrl_c_restore();
+            audio::run_send_logged(target, path)?
+        }
         ["audio", "receive"] => audio::run_receive(audio::DEFAULT_BUFFER_MS)?,
         ["audio", "receive", "--buffer-ms", n] => match n.parse() {
             Ok(n) if n > 0 => audio::run_receive(n)?,

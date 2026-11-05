@@ -8,8 +8,23 @@ and mouse between computers but not audio or file drag-and-drop.
 | [audio](docs/audio.md) (`synergy-tools audio`) | Streams one machine's audio to another over the LAN (e.g. Windows game audio to Linux headphones). | Windows sender → Linux receiver |
 | [files](docs/files.md) (`synergy-tools`) | Sends files between the two machines: drop window, right-click "Send to", tray. | Windows ↔ Linux |
 
-The tray menu's first line shows who is reachable: `Online: <names>`, `No partner online` or
-`Not paired`; dropped files go to the online partner (a picker when several are online).
+Run `synergy-tools` with no arguments for the tray (one icon for both tools). Its menu:
+
+```
+Online: <names> | No partner online | Not paired
+─────
+Audio: streaming to <name> | receiving from <name> | waiting for partner | stopped | error: …
+Stop audio / Start audio
+Auto-mute speakers        (Windows only, a check mark)
+─────
+Hide drop window / Show drop window
+─────
+Pair…
+Quit
+```
+
+Dropped files go to the online partner (a picker when several are online). Audio streams by
+itself from Windows to the online Linux partner ([docs/audio.md](docs/audio.md#in-the-tray)).
 
 Both pair the two machines once with an 8-digit code, and their traffic is encrypted and
 authenticated. Usage: [docs/files.md](docs/files.md) and [docs/audio.md](docs/audio.md).
