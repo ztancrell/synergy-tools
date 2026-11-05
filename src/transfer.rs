@@ -594,6 +594,16 @@ mod tests {
     }
 
     #[test]
+    fn online_tells_bootcamp_twins_apart() {
+        let (port, _rx) = listener_with(&[partner("127.0.0.1", [7; 32])]);
+        let host = format!("127.0.0.1:{port}");
+        let twin = |os: &str, s: u8| Partner { name: "MBP".into(), os: os.into(), ..partner(&host, [s; 32]) };
+        let got = online(&[twin("windows", 8), twin("macos", 7)]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].os, "macos");
+    }
+
+    #[test]
     fn target_by_online_count() {
         let named = |n: &str, s: u8| Partner { name: n.into(), ..partner("h", [s; 32]) };
         let (a, b) = (named("a", 1), named("b", 2));

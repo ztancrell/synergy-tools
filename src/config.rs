@@ -301,6 +301,14 @@ mod tests {
     }
 
     #[test]
+    fn find_twins_by_name_and_os() {
+        let ps = [partner("MBP", "macos", "10.0.0.5", 1), partner("MBP", "windows", "10.0.0.5", 2)];
+        assert!(find(&ps, "MBP").unwrap_err().contains("<name>/<os>"));
+        assert_eq!(find(&ps, "MBP/windows").unwrap().os, "windows");
+        assert!(find(&ps, "10.0.0.5").is_err());
+    }
+
+    #[test]
     fn resolve_default_port() {
         assert_eq!(resolve("127.0.0.1", 24851).unwrap().port(), 24851);
         assert_eq!(resolve("127.0.0.1", 24850).unwrap().port(), 24850);

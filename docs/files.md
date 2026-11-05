@@ -33,6 +33,10 @@ of partners; pairing again with the same PC (same name and OS) replaces its entr
 must reach each other on TCP port
 **24851** (open it in your firewall).
 
+**Boot Camp:** pair each OS of the Mac once (the Linux side then has two partners, same IP is
+fine). Only the booted one shows online. On the command line name them `<name>/<os>`, e.g.
+`synergy-tools unpair MBP/windows`.
+
 1. On PC 1 either use the tray menu **Pair…** (the code shows in the drop window's title and in a
    notification, with the command for the other PC; clicking that notification copies the command,
    middle-click on dunst, via `xclip` on Linux; on macOS the notification has no click action, so
@@ -72,7 +76,7 @@ Script Editor in System Settings → Notifications; allow them there if none app
   to send nothing; a new drop replaces the held files). With nobody online the notification says
   `not sent: no partner online` and nothing is sent. The title shows `Release to send`,
   `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing or
-  minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
+  minimizing the window only hides it to the tray (macOS has no minimize button: see "macOS" above) (tray menu: Show drop window); it has no
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
   the window stays on top by itself.
 - **Right-click:** the Send To entries (Windows Explorer, Thunar, Dolphin, Nautilus) come back

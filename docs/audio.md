@@ -15,8 +15,8 @@ sender → Linux receiver, from the tray ([In the tray](#in-the-tray)) or the te
 ## In the tray
 
 Run `synergy-tools` (no arguments) on both PCs once they are paired, and audio streams by
-itself: the Windows tray streams to the first online Linux partner, the Linux tray plays what
-it receives. The role is fixed by platform (Windows sends, Linux receives). If the partner
+itself: the Windows and macOS trays stream to the first online Linux partner, the Linux tray plays what
+it receives. The role is fixed by platform (Linux receives; Windows and macOS send). If the partner
 goes offline or another one comes online, the sender follows within about 6 s. Unpairing a
 sender stops the Linux side playing it within about 5 s.
 
@@ -50,7 +50,15 @@ Superseded: installers, autostart and releases come in phase 3; build from sourc
 
 ### macOS (sender)
 
-Superseded: macOS is not supported by synergy-tools until phase 2; the released synergy-audio cannot pair with it.
+macOS 14.6 or later, universal binary (see the README). Set the output device to 48 kHz
+(Audio MIDI Setup > the output device > Format). Run the tray from Terminal, as in
+[files.md "macOS"](files.md#macos). It streams by itself to the first online Linux partner;
+Stop/Start works as on Windows. There is no auto-mute on macOS: mute or lower the Mac's
+speakers yourself.
+
+The first run asks for **System Audio Recording** permission, naming Terminal: allow it
+(System Settings > Privacy & Security > Screen & System Audio Recording), then Quit and start
+again. Without it Linux gets silence while the Mac says streaming.
 
 ## Author's setup
 

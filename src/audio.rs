@@ -427,13 +427,17 @@ fn config_48k(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
         .filter(|c| c.sample_format() == def.sample_format())
         .find_map(|c| c.try_with_sample_rate(RATE))
         .ok_or_else(|| {
-            format!(
-                "device '{device}' runs at {} Hz and can't do {RATE} Hz. \
-                 Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
-                 Linux/PipeWire: default.clock.rate = 48000) and retry.",
-                def.sample_rate()
-            )
+            rate_error(&device.to_string(), def.sample_rate())
         })
+}
+
+fn rate_error(device: &str, rate: u32) -> String {
+    format!(
+        "device '{device}' runs at {rate} Hz and can't do {RATE} Hz. \
+         Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
+         macOS: Audio MIDI Setup > the output device > Format; \
+         Linux/PipeWire: default.clock.rate = 48000) and retry."
+    )
 }
 
 fn default_output() -> Result<cpal::Device, String> {
@@ -994,6 +998,14 @@ mod tests {
 
     fn partner(name: &str, os: &str, id: u8) -> config::Partner {
         config::Partner { id: [id; 8], host: "h".into(), secret: [id; 32], os: os.into(), name: name.into() }
+    }
+
+    #[test]
+    fn rate_error_names_each_os() {
+        let e = rate_error("Speakers", 44100);
+        for k in ["44100", "Audio MIDI Setup", "Sound settings", "default.clock.rate"] {
+            assert!(e.contains(k), "{e}");
+        }
     }
 
     #[test]
