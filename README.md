@@ -8,8 +8,29 @@ same program: each one can send files to, and receive files from, the one paired
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
-**Status: in development.** Pairing, sending and the drop window work (below); the tray app
-is not built yet.
+**Status: in development.** Pairing, sending, the drop window and the tray app work (below);
+the Windows installer is below, the Linux installer is not written yet.
+
+## Install on Windows
+
+1. Copy `synergy-dragndrop.exe`, `install-autostart.ps1` and `uninstall-autostart.ps1` into one folder.
+2. In that folder run `powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1`
+   (add `-Peer <other PC's address>` to set the paired PC's address; pairing itself is step 1 of
+   "Pairing" below). Rerun it any time to update.
+3. Windows shows **one** UAC prompt: it adds the inbound firewall rule for TCP 24851 (Private and
+   Public profiles). If you decline, the rest is installed and the script says how to add the rule later.
+
+It installs: the exe in `%LOCALAPPDATA%\synergy-dragndrop\`; a scheduled task `synergy-dragndrop`
+that starts the tray app 10 s after every login (no console window); the Explorer entry
+**Send to > Send to other PC** (right-click files > Send to); and the firewall rule
+`synergy-dragndrop (TCP 24851)`. Undo with `.\uninstall-autostart.ps1` (one more UAC prompt); it keeps
+your pairing config and the Downloads folder.
+
+The exe has no console of its own. In a terminal, command-line output still appears in cmd.exe and
+PowerShell when you run it from there, but PowerShell may return its prompt before the command has
+finished and `$LASTEXITCODE` is unreliable; use `.\synergy-dragndrop.exe pair ... | Out-Host`, or
+`Start-Process -Wait -NoNewWindow .\synergy-dragndrop.exe -ArgumentList ...`, or cmd's
+`start /wait`. Without a terminal (Send To) results appear as notifications.
 
 ## Pairing
 
@@ -91,7 +112,7 @@ cargo build --release
 cargo test
 ```
 
-The binary is `target/release/synergy-dragndrop`. Run it with no arguments for usage.
+The binary is `target/release/synergy-dragndrop`. Run it with a wrong argument for usage (no arguments starts the tray app).
 Windows build check from Linux: `cargo check --target x86_64-pc-windows-gnu`.
 
 ## License

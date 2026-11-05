@@ -1,3 +1,6 @@
+// No console window for the tray app and Send To; terminal runs re-attach to the parent console.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod config;
 mod gui;
 mod notify;
@@ -106,7 +109,37 @@ fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// A GUI-subsystem exe has no console. With arguments (terminal run) attach to the parent's and,
+/// unless stdout/stderr were redirected, point them at it so println!/eprintln! show up.
+#[cfg(windows)]
+fn attach_console() {
+    use std::os::windows::io::IntoRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(pid: u32) -> i32;
+        fn GetStdHandle(which: u32) -> isize;
+        fn SetStdHandle(which: u32, h: isize) -> i32;
+    }
+    unsafe {
+        if AttachConsole(u32::MAX) == 0 {
+            return; // no parent console (e.g. Send To): output is dropped
+        }
+        for which in [-11i32 as u32, -12i32 as u32] {
+            let h = GetStdHandle(which);
+            if h == 0 || h == -1 {
+                if let Ok(f) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+                    SetStdHandle(which, f.into_raw_handle() as isize);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().len() > 1 {
+        attach_console();
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = run(&args) {
         eprintln!("{e}");
