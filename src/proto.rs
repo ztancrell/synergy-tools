@@ -1,8 +1,9 @@
 //! Encrypted wire layer shared by pairing and transfers.
 //!
 //! Frame: `u16` big-endian length + bytes. A connection starts with one mode byte
-//! (`b'P'` pairing, `b'S'` files session), then frames. A session's mode byte is followed by
-//! the 8-byte partner id, so the listener knows which pairing secret to use.
+//! (`b'P'` pairing, `b'S'` files session, `b'H'` presence ping), then frames. A session's or
+//! ping's mode byte is followed by the 8-byte partner id, so the listener knows which pairing
+//! secret to use. A ping is the handshake alone, then close.
 //!
 //! Session: `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = pairing secret, prologue
 //! `synergy-tools files v1`. The client sends handshake message 1, the server replies with

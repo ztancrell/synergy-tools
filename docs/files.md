@@ -42,8 +42,9 @@ code fails on both sides and the code is spent: start again with a new one.
   matches several partners (say one PC paired from both Windows and Linux), the command fails and
   lists them; pick one as `<name>/<os>`, e.g. `pc/windows`. The same goes for `unpair` and `--to`.
 - `synergy-tools unpair <name>` forgets that partner.
-- With several partners, `files send` needs `--to <name>`; the drop window only works with exactly
-  one partner (until a later version lets you pick).
+- Files go to the partner that is online (running synergy-tools). With several online, `files send`
+  needs `--to <name>` and the drop window shows a picker. Superseded: the drop window used to need
+  exactly one paired partner.
 
 The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 0600) or
 `%APPDATA%\synergy-tools\` (Windows), one line per partner:
@@ -53,7 +54,10 @@ The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 
 
 - **Drop window:** a small window titled `Drop files to send` sits at the bottom-right of the
   screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox).
-  Drag files onto it (from Explorer, Thunar, ...). The title shows `Release to send`,
+  Drag files onto it (from Explorer, Thunar, ...). They go to the partner that is online; with
+  several online a menu of their names pops up and the files go to the one you click (dismiss it
+  to send nothing; a new drop replaces the held files). With nobody online the notification says
+  `not sent: no partner online` and nothing is sent. The title shows `Release to send`,
   `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing or
   minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
@@ -62,7 +66,8 @@ The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 
   Send To > Send to other PC. Dolphin and Nautilus have an entry too.
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
-  out) shows the status, `Paired with <names>` or `Not paired` (the hover tooltip with the same text
+  out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
+  5 seconds (the hover tooltip with the same text
   works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
   `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
@@ -80,14 +85,16 @@ synergy-tools partners                list paired PCs
 synergy-tools partner <name> <host>   change a partner's address
 synergy-tools unpair <name>           forget a partner
 synergy-tools files send [--to <name>] <file>...
-                                      send files to a partner (--to if there are several)
+                                      send files to the online partner (--to if several are online)
 synergy-tools files listen            receive files without the tray app
 synergy-tools --version
 ```
 
 On Windows use `.\synergy-tools.exe ... | Out-Host`. `<host>` is an IP address or name,
 optionally `:port` (default 24851). `files send` takes files only (folders are refused: zip them first)
-and fails at once, within 3 seconds, if the other PC is unreachable; nothing is queued or retried.
+and first checks which partners are online (about a second): with nobody online it fails with
+`not sent: no partner online`, with several it asks for `--to <name>` (`--to` picks among the
+online ones). Nothing is queued or retried.
 If the tray app is already running it holds port 24851, so `pair` and `files listen` say so; use its tray
 menu or quit it first.
 
@@ -130,7 +137,9 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: pair again; pairing with the same PC (same name and OS) replaces its
   entry, no unpair needed.
-- **`several partners (...): choose one with --to <name>`**: name the receiver with `--to`.
+- **`not sent: no partner online`**: no partner answered within a second: start synergy-tools on
+  the other PC, or check its address and firewall (see `other PC unreachable`).
+- **`several partners online (...): use --to <name>`**: name the receiver with `--to`.
 - **`... partners is damaged: delete it and pair again`**: the partners file was edited or cut
   short; delete it and pair again.
 - **`port 24851 is busy: synergy-tools is probably already running`**: the tray app holds the
@@ -163,7 +172,10 @@ native MSVC `cargo build --release`. CI (`.github/workflows/ci.yml`) runs `cargo
 
 ## How it works
 
-TCP port 24851, one connection per batch. The first byte says what it is: `P` pairing, `S` session.
+TCP port 24851, one connection per batch. The first byte says what it is: `P` pairing, `S` session,
+`H` presence ping. Every 5 seconds the tray pings each partner (`H`, partner id, the same Noise
+handshake, then close; 1 s timeout); the partners that complete it are "online". The receiver
+answers a ping silently: no notification, and an unknown id just closes the connection.
 Pairing runs SPAKE2 over the 8-digit code (one attempt, 120 s); each side also sends its OS and
 name, both confirmations cover both names, and both sides keep a shared secret plus the other's
 name. The partner id is the first 8 bytes of `SHA256("synergy-tools id" ‖ secret)`; a session

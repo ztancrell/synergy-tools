@@ -68,19 +68,57 @@ pub fn pair_with(host: &str, code: &str) -> Result<Partner, String> {
     Ok(p)
 }
 
-/// The partner to send to: `to` by name or host, else the only one.
-pub fn only_partner(ps: Vec<Partner>, to: Option<&str>) -> Result<Partner, String> {
-    if let Some(to) = to {
-        return config::find(&ps, to).cloned();
+/// How often the tray re-checks which partners are online.
+pub const PRESENCE_EVERY: Duration = Duration::from_secs(5);
+const PING_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// True only if `p` answers a presence ping (`H` + id + handshake) within about a second.
+pub fn ping(p: &Partner) -> bool {
+    let Ok(addr) = config::resolve(&p.host, crate::PORT) else { return false };
+    let Ok(s) = TcpStream::connect_timeout(&addr, PING_TIMEOUT) else { return false };
+    let _ = s.set_read_timeout(Some(PING_TIMEOUT));
+    let _ = s.set_write_timeout(Some(PING_TIMEOUT));
+    Session::client(s, b'H', &p.id, &p.secret).is_ok()
+}
+
+/// The partners that answer a ping, pinged in parallel, in list order.
+pub fn online(ps: &[Partner]) -> Vec<Partner> {
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = ps.iter().map(|p| sc.spawn(move || ping(p))).collect();
+        ps.iter().zip(hs).filter_map(|(p, h)| h.join().unwrap_or(false).then(|| p.clone())).collect()
+    })
+}
+
+/// Every `PRESENCE_EVERY`, refresh `online` from the partners file; `changed` runs when the set of ids changes.
+pub fn watch_online(online: Arc<Mutex<Vec<Partner>>>, changed: impl Fn() + Send + 'static) -> ! {
+    let ids = |v: &[Partner]| v.iter().map(|p| p.id).collect::<Vec<_>>();
+    loop {
+        let now = self::online(&config::load_partners().unwrap_or_default());
+        let mut cur = online.lock().unwrap_or_else(|e| e.into_inner());
+        let differs = ids(&cur) != ids(&now);
+        *cur = now;
+        drop(cur);
+        if differs {
+            changed();
+        }
+        std::thread::sleep(PRESENCE_EVERY);
     }
-    match &ps[..] {
-        [] => Err(config::NOT_PAIRED.into()),
-        [p] => Ok(p.clone()),
-        _ => Err(format!(
-            "several partners ({}): choose one with --to <name>",
-            ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
-        )),
-    }
+}
+
+pub enum Target {
+    Nobody,
+    One(Partner),
+    Several(Vec<Partner>),
+}
+
+/// Who a send goes to, from the partners online now; `to` picks one of them by name.
+pub fn target(mut online: Vec<Partner>, to: Option<&str>) -> Result<Target, String> {
+    Ok(match (online.len(), to) {
+        (0, _) => Target::Nobody,
+        (_, Some(to)) => Target::One(config::find(&online, to)?.clone()),
+        (1, None) => Target::One(online.remove(0)),
+        _ => Target::Several(online),
+    })
 }
 
 /// Every path must be an existing regular file. Runs before connecting.
@@ -249,6 +287,17 @@ impl Listener {
                     Ok(name) => Event::Paired(name),
                     Err(e) => Event::PairFailed(e),
                 });
+            }
+            // Presence ping: a handshake proves the partner is here; never an event.
+            b'H' => {
+                let mut id = [0u8; 8];
+                if s.read_exact(&mut id).is_err() {
+                    return;
+                }
+                let known = config::load_partners_from(&self.config_dir).ok().and_then(|ps| ps.into_iter().find(|p| p.id == id));
+                if let Some(p) = known {
+                    let _ = Session::server(s, &p.secret);
+                }
             }
             b'S' => {
                 let mut id = [0u8; 8];
@@ -486,6 +535,73 @@ mod tests {
         let e = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(matches!(e, Event::Refused(_)), "{e:?}");
         assert_eq!(count(&dl), 0);
+    }
+
+    /// A running listener that knows `ps`; returns its port and its event channel.
+    fn listener_with(ps: &[Partner]) -> (u16, std::sync::mpsc::Receiver<Event>) {
+        let (dl, cfg) = (tmp(), tmp());
+        let l = Listener::bind_with(0, dl, cfg.clone()).unwrap();
+        let port = l.port();
+        config::save_partners_to(&cfg, ps).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        std::thread::spawn(move || l.run(move |e| tx.lock().unwrap().send(e).unwrap()));
+        (port, rx)
+    }
+
+    #[test]
+    fn ping_known_partner_true() {
+        let (port, rx) = listener_with(&[partner("127.0.0.1", [7; 32])]);
+        let p = partner(&format!("127.0.0.1:{port}"), [7; 32]);
+        assert!(ping(&p));
+        // The ping made no event: the first one comes from the send that follows.
+        let f = tmp().join("a");
+        std::fs::write(&f, b"a").unwrap();
+        send_files(&p, &[f]).unwrap();
+        let e = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(e, Event::Receiving(_)), "{e:?}");
+    }
+
+    #[test]
+    fn ping_unknown_id_false() {
+        let (port, rx) = listener_with(&[partner("127.0.0.1", [7; 32])]);
+        let stranger = Partner { id: [9; 8], ..partner(&format!("127.0.0.1:{port}"), [7; 32]) };
+        assert!(!ping(&stranger));
+        // Closed silently: no Refused before the next real send's events.
+        let (f, p) = (tmp().join("a"), partner(&format!("127.0.0.1:{port}"), [7; 32]));
+        std::fs::write(&f, b"a").unwrap();
+        send_files(&p, &[f]).unwrap();
+        let e = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(e, Event::Receiving(_)), "{e:?}");
+    }
+
+    #[test]
+    fn ping_nobody_listening_false_fast() {
+        let t = Instant::now();
+        assert!(!ping(&partner("127.0.0.1:1", [0; 32])));
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn online_lists_only_answering() {
+        let (port, _rx) = listener_with(&[partner("127.0.0.1", [7; 32])]);
+        let up = Partner { name: "up".into(), ..partner(&format!("127.0.0.1:{port}"), [7; 32]) };
+        let down = Partner { name: "down".into(), ..partner("127.0.0.1:1", [8; 32]) };
+        let names: Vec<_> = online(&[down, up]).into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["up"]);
+    }
+
+    #[test]
+    fn target_by_online_count() {
+        let named = |n: &str, s: u8| Partner { name: n.into(), ..partner("h", [s; 32]) };
+        let (a, b) = (named("a", 1), named("b", 2));
+        assert!(matches!(target(vec![], None), Ok(Target::Nobody)));
+        assert!(matches!(target(vec![], Some("a")), Ok(Target::Nobody)));
+        assert!(matches!(target(vec![a.clone()], None), Ok(Target::One(p)) if p.name == "a"));
+        assert!(matches!(target(vec![a.clone(), b.clone()], None), Ok(Target::Several(v)) if v.len() == 2));
+        assert!(matches!(target(vec![a.clone(), b.clone()], Some("b")), Ok(Target::One(p)) if p.name == "b"));
+        let e = target(vec![a, b], Some("zz")).err().unwrap();
+        assert!(e.contains("a (linux)") && e.contains("b (linux)"), "{e}");
     }
 
     #[test]
