@@ -164,7 +164,13 @@ pub fn local_address() -> String {
 pub fn this_pc_name() -> String {
     #[cfg(windows)]
     let name = std::env::var("COMPUTERNAME").ok();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    #[cfg(not(any(windows, target_os = "macos")))]
     let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok().map(|s| s.trim().to_string());
     name.filter(|n| !n.is_empty()).unwrap_or_else(|| "other PC".to_string())
 }
@@ -213,10 +219,16 @@ mod tests {
     #[test]
     fn partners_round_trip() {
         let d = tmp();
-        let ps = vec![partner("pc-a", "linux", "192.168.1.5", 1), partner("Living Room PC", "windows", "10.0.0.2:24851", 2)];
+        let ps = vec![partner("pc-a", "linux", "192.168.1.5", 1), partner("Living Room PC", "windows", "10.0.0.2:24851", 2), partner("Zach’s MacBook Pro", "macos", "192.168.1.9", 3)];
         save_partners_to(&d, &ps).unwrap();
         assert_eq!(load_partners_from(&d).unwrap(), ps);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_pc_name_from_scutil() {
+        assert_ne!(this_pc_name(), "other PC");
     }
 
     #[test]

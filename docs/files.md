@@ -27,7 +27,8 @@ must reach each other on TCP port
 
 1. On PC 1 either use the tray menu **Pair…** (the code shows in the drop window's title and in a
    notification, with the command for the other PC; clicking that notification copies the command,
-   middle-click on dunst, via `xclip` on Linux) or run `synergy-tools pair`. It prints a
+   middle-click on dunst, via `xclip` on Linux; on macOS the notification has no click action, so
+   copy the command from its text) or run `synergy-tools pair`. It prints a
    code like `1234-5678` and the command to run on the other PC. The code works for one attempt
    and expires after 2 minutes.
 2. On PC 2 run `synergy-tools pair <PC 1's address> 1234-5678`
@@ -51,6 +52,9 @@ The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 
 `<id> <host> <secret> <os> <name>`.
 
 ## Daily use
+
+On macOS, notifications come from `osascript` and have no click action. macOS may list them under
+Script Editor in System Settings → Notifications; allow them there if none appear.
 
 - **Drop window:** a small window titled `Drop files to send` sits at the bottom-right of the
   screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox).
