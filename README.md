@@ -9,8 +9,8 @@ Files land in the Downloads folder; transfers are authenticated and encrypted af
 pairing with an 8-digit code.
 
 **Status:** v0.1.0. Windows <-> Linux, both directions. Not tagged or released yet (no GitHub
-remote yet), so build from source for now; the release steps below describe what a tagged
-release will contain.
+remote yet), so build from source for now (see "Build from source" for the Windows exe); the
+release steps below describe what a tagged release will contain.
 
 The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME work as extras.
 
@@ -34,11 +34,16 @@ builds with cargo instead; from an extracted release it uses the bundled binary)
 - A firewall rule for TCP 24851 in ufw or firewalld, if one is active. Only this step asks for
   your sudo password.
 
-The program needs the GTK 3 runtime (`libgtk-3-0`) and `libayatana-appindicator3-1` for the tray icon.
+The program needs the GTK 3 runtime and the Ayatana appindicator library for the tray icon:
+Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3` and
+`libayatana-appindicator`.
 
 ### Windows
 
-1. Extract the zip (Explorer: Extract All). Everything is at the zip root, so you get one folder.
+1. Get one folder holding `synergy-dragndrop.exe`, `install-autostart.ps1`,
+   `uninstall-autostart.ps1` and the README: extract the release zip (Explorer: Extract All;
+   everything is at the zip root), or, until there are releases, build the exe on the Linux PC and
+   copy those files over (see "Build from source").
 2. In that folder run `powershell -ExecutionPolicy Bypass -File .\install-autostart.ps1`
    (add `-Peer <other PC's address>` to set the paired PC's address once you are paired).
    Rerun it any time to update.
@@ -117,8 +122,10 @@ menu or quit it first.
 
 Received files are saved in your Downloads folder.
 
-- A file is written under a hidden temporary name (`.name.xxxxxxxx.part`) and only gets its real
-  name once it has arrived completely, so you never see half a file.
+- A file is written under a temporary name (`.name.xxxxxxxx.part`, hidden on Linux, visible on
+  Windows) and only gets its real name once it has arrived completely, so you never see half a
+  file. A crash mid-receive can leave one behind; it is safe to delete and never looks like a
+  complete file.
 - An existing file is never replaced: a second `report.pdf` is saved as `report (1).pdf`,
   then `report (2).pdf`, and so on.
 - File names from the other PC are cleaned up: folders in the name are dropped, and characters
@@ -144,8 +151,9 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 - **`not sent: other PC unreachable`** (after 3 seconds): the other PC is off, the address in the
   pairing is out of date (`synergy-dragndrop peer <new address>`; a fixed address for it in your
   router avoids this), or its firewall blocks TCP 24851. Rerun the installer there, or on Windows
-  `New-NetFirewallRule -DisplayName 'synergy-dragndrop (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Profile Private,Public -Action Allow`
-  as administrator.
+  `New-NetFirewallRule -DisplayName 'synergy-dragndrop (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Program "$env:LOCALAPPDATA\synergy-dragndrop\synergy-dragndrop.exe" -Profile Private,Public -Action Allow`
+  as administrator. The rule covers only that installed exe: a `listen` or `pair` run from another
+  folder is not covered by it.
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: unpair and pair again.
 - **`port 24851 is busy: synergy-dragndrop is probably already running`**: the tray app holds the
@@ -154,7 +162,7 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
   info > Run anyway**. That is the Mark of the Web at work; the program adds no dialog of its own.
 - **No terminal output on Windows**: add `| Out-Host` (see above).
 - **Clicking a notification does nothing on Openbox/dunst**: use middle-click (see Notifications).
-- **No tray icon on Linux**: install `libayatana-appindicator3-1`; tint2 needs its systray enabled.
+- **No tray icon on Linux**: install `libayatana-appindicator3-1` (Arch/CachyOS: `libayatana-appindicator`); tint2 needs its systray enabled.
 - Extra, KDE/GNOME Wayland (apps can't force "always on top"): right-click the drop window's title
   bar > More Actions > Keep Above Others.
 - A batch where a later file fails (disk full, say) leaves the earlier files saved although the
@@ -176,8 +184,20 @@ cargo test
 ```
 
 The binary is `target/release/synergy-dragndrop`. Linux needs `libgtk-3-dev` and
-`libayatana-appindicator3-dev`. Windows build check from Linux:
-`cargo check --target x86_64-pc-windows-gnu`. A tag `vX.Y.Z` (which must equal the version in
+`libayatana-appindicator3-dev` (Arch/CachyOS: `gtk3` and `libayatana-appindicator`).
+
+Windows exe, cross-built on the Linux PC (until releases exist):
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+# mingw-w64: Arch `mingw-w64-gcc`; Debian/Ubuntu `gcc-mingw-w64-x86-64`
+RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --target x86_64-pc-windows-gnu
+```
+
+Copy `target/x86_64-pc-windows-gnu/release/synergy-dragndrop.exe`, `install-autostart.ps1`,
+`uninstall-autostart.ps1` and `README.md` into one folder on the Windows PC and follow the Windows
+install steps above. Alternatively run a native MSVC `cargo build --release` on Windows. A quick
+check without linking: `cargo check --target x86_64-pc-windows-gnu`. A tag `vX.Y.Z` (which must equal the version in
 `Cargo.toml`) runs the release workflow: both archives and `SHA256SUMS`.
 
 ## How it works
@@ -191,8 +211,9 @@ or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s,
 
 ## Security notes
 
-- Only the paired PC can send: a connection that fails the handshake is refused and logged as
-  `refused connection from <ip>: not the paired PC`.
+- Only the paired PC can send: a connection that fails the handshake is refused and
+  `refused connection from <ip>: not the paired PC` is printed by `listen` and `pair` in the
+  terminal (the tray app has no log).
 - Transfers are encrypted and authenticated, but the 8-digit code is short: pair on a network you
   trust, within the 2-minute window. Anyone who guesses it in the one attempt would be paired, so
   a failed attempt ends pairing mode.

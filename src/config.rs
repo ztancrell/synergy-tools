@@ -3,10 +3,15 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 
 /// The one paired PC: where to reach it and the shared secret from pairing.
-#[derive(Debug)]
 pub struct Peer {
     pub host: String,
     pub secret: [u8; 32],
+}
+
+impl std::fmt::Debug for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Peer").field("host", &self.host).field("secret", &"<redacted>").finish()
+    }
 }
 
 pub fn hex(b: &[u8]) -> String {
@@ -110,6 +115,13 @@ mod tests {
         let mut r = [0u8; 8];
         getrandom::fill(&mut r).unwrap();
         std::env::temp_dir().join(format!("sdd-test-{}", hex(&r)))
+    }
+
+    #[test]
+    fn peer_debug_hides_secret() {
+        let p = Peer { host: "h".into(), secret: [0xab; 32] };
+        let d = format!("{p:?}");
+        assert!(!d.contains(&hex(&p.secret)) && !d.contains("171") && d.contains("<redacted>"), "{d}");
     }
 
     #[test]

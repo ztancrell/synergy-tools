@@ -67,8 +67,10 @@ fn pair_host() -> Result<(), String> {
     })
 }
 
-fn run(args: &[String]) -> Result<(), String> {
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
+    // Lossy only for subcommand/host/code matching; `send` paths keep their raw bytes.
+    let lossy: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    match lossy.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--version"] => println!("synergy-dragndrop {}", env!("CARGO_PKG_VERSION")),
         [] => gui::run()?,
         ["pair"] => pair_host()?,
@@ -140,7 +142,7 @@ fn main() {
     if std::env::args_os().len() > 1 {
         attach_console();
     }
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if let Err(e) = run(&args) {
         eprintln!("{e}");
         std::process::exit(1);
