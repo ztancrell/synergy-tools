@@ -38,7 +38,9 @@ code fails on both sides and the code is spent: start again with a new one.
 
 - `synergy-tools partners` lists the partners (`name  os  host`, one per line) or `Not paired.`
 - If a partner's address changes, run `synergy-tools partner <name> <new address>` (the secret is
-  kept). `<name>` matches the partner's name (case doesn't matter) or its current address.
+  kept). `<name>` matches the partner's name (case doesn't matter) or its current address. If it
+  matches several partners (say one PC paired from both Windows and Linux), the command fails and
+  lists them; pick one as `<name>/<os>`, e.g. `pc/windows`. The same goes for `unpair` and `--to`.
 - `synergy-tools unpair <name>` forgets that partner.
 - With several partners, `files send` needs `--to <name>`; the drop window only works with exactly
   one partner (until a later version lets you pick).
@@ -126,7 +128,8 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
   pairing is out of date (`synergy-tools partner <name> <new address>`; a fixed address for it in your
   router avoids this), or its firewall blocks TCP 24851. Open TCP 24851 there (on Windows, `New-NetFirewallRule -DisplayName 'synergy-tools (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Profile Private,Public -Action Allow` as administrator).
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
-- **`not sent: the other PC refused (pairing doesn't match: pair again)`**: unpair and pair again.
+- **`not sent: the other PC refused (pairing doesn't match: pair again)`**: pair again; pairing with the same PC (same name and OS) replaces its
+  entry, no unpair needed.
 - **`several partners (...): choose one with --to <name>`**: name the receiver with `--to`.
 - **`... partners is damaged: delete it and pair again`**: the partners file was edited or cut
   short; delete it and pair again.

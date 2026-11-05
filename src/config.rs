@@ -85,6 +85,8 @@ pub fn save_partners_to(dir: &Path, ps: &[Partner]) -> Result<(), String> {
 }
 
 /// Pairing again with the same PC (same name and OS) replaces it; anything else is added.
+// ponytail: load-modify-save without a lock, through a shared partners.tmp; a CLI and the tray
+// writing at once can lose an update. Per-process tmp name + lock file if it ever matters.
 pub fn add_partner_to(dir: &Path, p: Partner) -> Result<(), String> {
     let mut ps = load_partners_from(dir)?;
     match ps.iter_mut().find(|q| q.name == p.name && q.os == p.os) {
@@ -106,14 +108,21 @@ pub fn add_partner(p: Partner) -> Result<(), String> {
     add_partner_to(&config_dir()?, p)
 }
 
-/// By name (ASCII case-insensitive) or host.
+/// By name or `name/os` (ASCII case-insensitive), or by host. Several matches are an error.
 pub fn find<'a>(ps: &'a [Partner], key: &str) -> Result<&'a Partner, String> {
     if ps.is_empty() {
         return Err(NOT_PAIRED.into());
     }
-    ps.iter().find(|p| p.name.eq_ignore_ascii_case(key) || p.host == key).ok_or_else(|| {
-        format!("no partner {key:?}; partners: {}", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))
-    })
+    let named = |p: &Partner| {
+        p.name.eq_ignore_ascii_case(key)
+            || key.rsplit_once('/').is_some_and(|(n, os)| p.name.eq_ignore_ascii_case(n) && p.os.eq_ignore_ascii_case(os))
+    };
+    let list = |ps: &[&Partner]| ps.iter().map(|p| format!("{} ({})", p.name, p.os)).collect::<Vec<_>>().join(", ");
+    match ps.iter().filter(|p| named(p) || p.host == key).collect::<Vec<_>>()[..] {
+        [p] => Ok(p),
+        [] => Err(format!("no partner {key:?}; partners: {}", list(&ps.iter().collect::<Vec<_>>()))),
+        ref several => Err(format!("{key:?} matches several partners: {}; use <name>/<os>", list(several))),
+    }
 }
 
 /// This PC's LAN address as the other PC would reach it, else the PC name.
@@ -231,6 +240,16 @@ mod tests {
         assert_eq!(find(&ps, "10.0.0.2").unwrap().name, "pc-b");
         let e = find(&ps, "nope").unwrap_err();
         assert!(e.contains("pc-a") && e.contains("pc-b"), "{e}");
+    }
+
+    #[test]
+    fn ambiguous_key_needs_os() {
+        let ps = [partner("pc", "linux", "10.0.0.1", 1), partner("pc", "windows", "10.0.0.1", 2)];
+        let e = find(&ps, "PC").unwrap_err();
+        assert!(e.contains("pc (linux)") && e.contains("pc (windows)"), "{e}");
+        assert_eq!(find(&ps, "pc/Linux").unwrap().secret, [1; 32]);
+        assert_eq!(find(&ps, "PC/windows").unwrap().secret, [2; 32]);
+        assert!(find(&ps, "10.0.0.1").unwrap_err().contains("several"));
     }
 
     #[test]

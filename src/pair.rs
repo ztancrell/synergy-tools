@@ -3,7 +3,8 @@
 //!
 //! Wire (after the joiner's `P`): joiner → `msg_a`, `who_j`; host → `msg_b ‖ confB`, `who_h`;
 //! joiner → `confA`; host → `OK` (all frames). `who` = `os + "\n" + name`, at most 1000 bytes.
-//! Both confirmations cover both `who`s, so neither name can be swapped in transit.
+//! `conf = SHA256(label ‖ key ‖ SHA256(who_j) ‖ SHA256(who_h))`: both confirmations cover both
+//! `who`s, each hashed first so the boundary between them can't be shifted in transit.
 
 use crate::proto::{read_frame, write_frame};
 use sha2::{Digest, Sha256};
@@ -94,7 +95,7 @@ pub fn partner_id(secret: &[u8; 32]) -> [u8; 8] {
 }
 
 fn confirm(label: &[u8], key: &[u8], who_j: &[u8], who_h: &[u8]) -> [u8; 32] {
-    digest(&[label, key, who_j, who_h])
+    digest(&[label, key, &digest(&[who_j]), &digest(&[who_h])])
 }
 
 /// Host side (the caller already read `b'P'`). One attempt; the secret exists only after both confirmations match.
@@ -178,6 +179,21 @@ mod tests {
         assert_eq!(hs, js);
         assert_eq!((hw.name.as_str(), hw.os.as_str()), ("pc j", "windows"));
         assert_eq!((jw.name.as_str(), jw.os.as_str()), ("pc-h", "linux"));
+    }
+
+    #[test]
+    fn shifted_who_split_changes_confirmation() {
+        let (j, h) = (b"linux\npc-j".to_vec(), b"windows\npc-h".to_vec());
+        let (j2, h2) = ([&j[..], b"X"].concat(), [&b"X"[..], &h].concat());
+        assert_ne!(confirm(b"l", b"k", &j, &h), confirm(b"l", b"k", &j2, &h2));
+    }
+
+    #[test]
+    fn bad_who_refused() {
+        assert!(Who::decode(b"linux\npc").is_ok());
+        assert!(Who::decode(b"linux\npc\nevil").is_err());
+        assert!(Who::decode(b"linux\npc\x07").is_err());
+        assert!(Who::decode(b"linux\npc\r").is_err());
     }
 
     #[test]
