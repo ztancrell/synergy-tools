@@ -9,7 +9,7 @@ cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 ob_autostart="$cfg/openbox/autostart"
 
-pkill -f "$HOME/.local/bin/$name( |\$)" 2>/dev/null || true
+pkill -fx "$HOME/.local/bin/$name" 2>/dev/null || true
 rm -f "$HOME/.local/bin/$name" "$HOME/.local/bin/$name.new" \
       "$cfg/autostart/$name.desktop" \
       "$data/Thunar/sendto/$name.desktop" \

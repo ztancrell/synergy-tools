@@ -28,6 +28,7 @@ ob_autostart="$cfg/openbox/autostart"
 marker="# $name"
 
 if [ -f Cargo.toml ]; then
+    command -v cargo >/dev/null || { echo "cargo not found; install Rust, or use the prebuilt release tarball (it has the binary next to this script)." >&2; exit 1; }
     cargo build --release
     src="target/release/$name"
 elif [ -f "$name" ]; then
@@ -49,7 +50,7 @@ cat > "$data/Thunar/sendto/$name.desktop" <<EOT
 Type=Application
 Name=Send to other PC
 Icon=document-send
-Exec=$bin send %F
+Exec="$bin" send %F
 MimeType=application/octet-stream;
 EOT
 cat > "$data/kio/servicemenus/$name.desktop" <<EOT
@@ -62,7 +63,7 @@ Actions=send
 [Desktop Action send]
 Name=Send to other PC
 Icon=document-send
-Exec=$bin send %F
+Exec="$bin" send %F
 EOT
 chmod +x "$data/kio/servicemenus/$name.desktop"   # Plasma 6 requires it
 printf '#!/bin/sh\nexec "%s" send "$@"\n' "$bin" > "$data/nautilus/scripts/Send to other PC"
@@ -87,13 +88,14 @@ if [ -f "$ob_autostart" ] && [ -z "$xdg_ok" ]; then
     fi
     echo "Autostart: line added to $ob_autostart (no openbox-xdg-autostart found)."
 else
+    [ ! -f "$ob_autostart" ] || sed -i "\| & $marker\$|d" "$ob_autostart"   # flipped from the fallback: never start twice
     mkdir -p "$(dirname "$xdg_entry")"
     cat > "$xdg_entry" <<EOT
 [Desktop Entry]
 Type=Application
 Name=synergy-dragndrop
 Comment=Send files to the other PC
-Exec=$bin
+Exec="$bin"
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOT
@@ -120,7 +122,7 @@ fi
 
 if [ -n "${SDD_NO_START:-}" ]; then
     :
-elif pgrep -f "(^|/)$name( |$)" >/dev/null; then
+elif pgrep -fx "$bin" >/dev/null; then
     echo "Already running; restart it (or log out and in) to use the new binary."
 else
     setsid -f "$bin" >/dev/null 2>&1
