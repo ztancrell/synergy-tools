@@ -35,6 +35,7 @@ pub const DEFAULT_BUFFER_MS: usize = 20;
 const STATS_EVERY: Duration = Duration::from_secs(5);
 const TICK: Duration = Duration::from_millis(100); // how often loops check `quit`
 const RELOAD_EVERY: Duration = Duration::from_secs(1); // unknown peer id: reload peers at most this often
+const REVOKE_EVERY: Duration = Duration::from_secs(5); // reload peers so an unpaired sender's session ends
 const SEND_QUEUE: usize = 20; // packets between capture callback and sender thread (~100 ms)
 const LOG_MAX: u64 = 1 << 20; // --log file is emptied when it grows past 1 MiB
 const RETRY_EVERY: Duration = Duration::from_secs(10);
@@ -193,6 +194,8 @@ fn wait(d: Duration, quit: &AtomicBool) -> bool {
 /// Run audio for the tray on background threads and return at once. Receiver: bind UDP `PORT`
 /// once (busy: `Status::Error`, audio stays off) and play, retrying device errors every 10 s.
 /// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes.
+// ponytail: these threads have no panic guard; a panic freezes the audio line on its last
+// status. Wrap the bodies in catch_unwind and set Status::Error if that ever happens.
 pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
     std::thread::spawn(move || {
         if RECEIVER {
@@ -334,6 +337,20 @@ type LoadPeers = fn() -> Result<HashMap<[u8; 8], [u8; 32]>, String>;
 impl Rx {
     fn new(load_peers: LoadPeers) -> Rx {
         Rx { peers: HashMap::new(), load_peers, reloaded: None, cur: None, next: None, promoted: 0 }
+    }
+
+    /// Reload the partner list and drop sessions of senders no longer in it (unpaired).
+    /// A failed load keeps the old list.
+    fn reload(&mut self) {
+        if let Ok(p) = (self.load_peers)() {
+            self.peers = p;
+        }
+        let peers = &self.peers;
+        for s in [&mut self.cur, &mut self.next] {
+            if s.as_ref().is_some_and(|x| !peers.contains_key(&x.peer)) {
+                *s = None;
+            }
+        }
     }
 
     /// One datagram. Keepalives merge the sender's `Ctl` into `ctl`; acks carry ours.
@@ -827,7 +844,8 @@ pub fn run_receive(buffer_ms: usize) -> Result<(), String> {
 }
 
 /// Play what paired senders stream to `sock` until `quit` is set; returns within about 1 s.
-/// `load_peers` is called at start and again (at most once a second) for an unknown peer id.
+/// `load_peers` is called at start, again (at most once a second) for an unknown peer id, and
+/// every 5 s so an unpaired sender's session ends.
 pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc<Shared>, quit: Arc<AtomicBool>) -> Result<(), String> {
     let target = buffer_ms * SAMPLES_PER_MS;
     // Above this the sender clock is running ahead (or a burst arrived): drop back to target.
@@ -865,7 +883,12 @@ pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc
     let (mut pkts, mut late, mut rejected, mut trimmed) = (0u64, 0u64, 0u64, 0u64);
     let mut next_stats = Instant::now() + STATS_EVERY;
     let mut last_audio: Option<Instant> = None; // last authentic audio packet, for the status
+    let mut next_revoke = Instant::now() + REVOKE_EVERY;
     while !quit.load(Relaxed) {
+        if Instant::now() >= next_revoke {
+            rx.reload();
+            next_revoke = Instant::now() + REVOKE_EVERY;
+        }
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
             let sessions = rx.promoted;
             let got = rx.handle(&buf[..n], &mut sh.ctl.lock().unwrap());
@@ -1113,6 +1136,22 @@ mod tests {
         let mut ctl = Ctl { stopped: true, epoch: 1 };
         let r = rx.handle(&seal(&tx, 0, &pcm_bytes(&[1, 2, 3, 4])), &mut ctl);
         assert!(!matches!(r, In::Audio(_)), "{r:?}");
+    }
+
+    #[test]
+    fn unpaired_sender_session_revoked_on_reload() {
+        fn none() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+            Ok(HashMap::new())
+        }
+        let (mut rx, tx, _) = rx_session();
+        let ctl = &mut Ctl::default();
+        assert_eq!(rx.handle(&seal(&tx, 0, &pcm_bytes(&[1, 2])), ctl), In::Audio(vec![1, 2]));
+        rx.reload(); // still paired: session kept
+        assert_eq!(rx.handle(&seal(&tx, 1, &pcm_bytes(&[1, 2])), ctl), In::Audio(vec![1, 2]));
+        rx.load_peers = none; // unpaired
+        rx.reload();
+        assert_eq!(rx.handle(&seal(&tx, 2, &pcm_bytes(&[1, 2])), ctl), In::Rejected);
+        assert_eq!(rx.handle(&seal(&tx, KA_BIT, &Ctl::default().encode()), ctl), In::Rejected);
     }
 
     #[test]

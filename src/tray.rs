@@ -32,9 +32,11 @@ const ERROR_FOR: Duration = Duration::from_secs(5);
 const AUDIO_POLL: Duration = Duration::from_secs(1);
 const AUDIO_LINE_MAX: usize = 60;
 
-/// Audio menu line; `name_of` turns a partner id into a name.
-fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String {
+/// Audio menu line; `name_of` turns a partner id into a name. `stopped` (the user's Stop)
+/// shows as stopped while waiting, so it agrees with the "Start audio" item.
+fn audio_line(st: &Status, stopped: bool, name_of: impl Fn(&[u8; 8]) -> String) -> String {
     let line = match st {
+        Status::Waiting if stopped => "Audio: stopped".into(),
         Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
         Status::Streaming(id) => format!("Audio: streaming to {}", name_of(id)),
         Status::Stopped => "Audio: stopped".into(),
@@ -314,6 +316,7 @@ fn start() -> Result<(), String> {
     }
     let sh = audio::Shared::new(config::auto_mute_on());
     audio::mute::on_ctrl_c_restore();
+    audio::mute::restore(); // a mute left by an earlier run (e.g. shut down while streaming)
     audio::run_in_tray(sh.clone(), online.clone());
     {
         let proxy = proxy.clone();
@@ -335,7 +338,7 @@ fn start() -> Result<(), String> {
     }
     let (status, audio_item, stop_item, toggle, pair_item, quit) = (
         MenuItem::new(status_text(false, &[]), false, None),
-        MenuItem::new(audio_line(&Status::Waiting, |_| String::new()), false, None),
+        MenuItem::new(audio_line(&Status::Waiting, false, |_| String::new()), false, None),
         MenuItem::new(stop_text(false), true, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
@@ -484,6 +487,7 @@ fn start() -> Result<(), String> {
             }
             Event::UserEvent(UserEvent::Fatal(e)) => {
                 notify::error(&e);
+                audio::mute::restore();
                 std::process::exit(1);
             }
             Event::UserEvent(UserEvent::Listener(e)) => match e {
@@ -593,7 +597,7 @@ fn start() -> Result<(), String> {
             shown_tray = Some((ts, status_now.clone()));
         }
         let stopped = sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped;
-        let line = audio_line(&sh.status.lock().unwrap_or_else(|e| e.into_inner()), |id| {
+        let line = audio_line(&sh.status.lock().unwrap_or_else(|e| e.into_inner()), stopped, |id| {
             let known = online.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.id == *id).map(|p| p.name.clone());
             known
                 .or_else(|| config::load_partners().ok()?.into_iter().find(|p| p.id == *id).map(|p| p.name))
@@ -633,11 +637,12 @@ mod tests {
         use crate::audio::{Status, RECEIVER};
         let name = |_: &[u8; 8]| "B".to_string();
         let streaming = if RECEIVER { "Audio: receiving from B" } else { "Audio: streaming to B" };
-        assert_eq!(audio_line(&Status::Streaming([1; 8]), name), streaming);
-        assert_eq!(audio_line(&Status::Stopped, name), "Audio: stopped");
-        assert_eq!(audio_line(&Status::Waiting, name), "Audio: waiting for partner");
-        assert_eq!(audio_line(&Status::Error("no device".into()), name), "Audio: error: no device");
-        let long = audio_line(&Status::Error("x".repeat(100)), name);
+        assert_eq!(audio_line(&Status::Streaming([1; 8]), false, name), streaming);
+        assert_eq!(audio_line(&Status::Stopped, false, name), "Audio: stopped");
+        assert_eq!(audio_line(&Status::Waiting, false, name), "Audio: waiting for partner");
+        assert_eq!(audio_line(&Status::Waiting, true, name), "Audio: stopped");
+        assert_eq!(audio_line(&Status::Error("no device".into()), false, name), "Audio: error: no device");
+        let long = audio_line(&Status::Error("x".repeat(100)), false, name);
         assert_eq!(long.chars().count(), 60);
         assert!(long.starts_with("Audio: error: xxx") && long.ends_with('…'), "{long}");
     }

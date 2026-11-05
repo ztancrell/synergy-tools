@@ -62,8 +62,9 @@ The partners are the file `partners` in `~/.config/synergy-tools/` (Linux, mode 
   minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
   the window stays on top by itself.
-- **Right-click:** Superseded: the Send To entries came from the removed install scripts; phase 3 restores them. Windows Explorer: right-click > Send to > Send to other PC. Thunar: right-click >
-  Send To > Send to other PC. Dolphin and Nautilus have an entry too.
+- **Right-click:** the Send To entries (Windows Explorer, Thunar, Dolphin, Nautilus) come back
+  with phase 3's installer. Until then use the drop window or `synergy-tools files send`.
+  Superseded: they came from the removed install scripts.
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
@@ -166,8 +167,9 @@ cargo build --release
 cargo test
 ```
 
-The binary is `target/release/synergy-tools`. Linux needs `libgtk-3-dev` and
-`libayatana-appindicator3-dev` (Arch/CachyOS: `gtk3` and `libayatana-appindicator`). Windows: a
+The binary is `target/release/synergy-tools`. Linux needs `libgtk-3-dev`,
+`libayatana-appindicator3-dev` and `libasound2-dev` (Arch/CachyOS: `gtk3`,
+`libayatana-appindicator` and `alsa-lib`). Windows: a
 native MSVC `cargo build --release`. CI (`.github/workflows/ci.yml`) runs `cargo test` and
 `cargo build --release` on Ubuntu 22.04 and Windows.
 
@@ -203,4 +205,4 @@ or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s,
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE).
+GPL-3.0-or-later, see [LICENSE](../LICENSE).

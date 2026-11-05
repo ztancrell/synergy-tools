@@ -17,7 +17,8 @@ sender → Linux receiver, from the tray ([In the tray](#in-the-tray)) or the te
 Run `synergy-tools` (no arguments) on both PCs once they are paired, and audio streams by
 itself: the Windows tray streams to the first online Linux partner, the Linux tray plays what
 it receives. The role is fixed by platform (Windows sends, Linux receives). If the partner
-goes offline or another one comes online, the sender follows within about 6 s.
+goes offline or another one comes online, the sender follows within about 6 s. Unpairing a
+sender stops the Linux side playing it within about 5 s.
 
 The tray menu's audio section:
 
@@ -35,7 +36,8 @@ The tray menu's audio section:
   Linux side is playing ([Auto-mute](#auto-mute-of-the-speakers)). Saved across restarts
   (switched off = a file `auto-mute-off` in the synergy-tools config folder,
   `%APPDATA%\synergy-tools\`). Switching it off while muted unmutes at once. Quit also
-  unmutes if we muted.
+  unmutes if we muted, and so does the next start after a run that ended while muted (e.g.
+  Windows shut down while streaming).
 
 Don't run the headless `synergy-tools audio receive` while the Linux tray runs: both want UDP
 24850. The headless commands also don't answer presence pings, so the other tray doesn't see
@@ -83,6 +85,9 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
    ```sh
    sudo ufw allow 24850/udp
    ```
+   The tray app also needs inbound TCP 24851 (pairing, files, and the presence pings that
+   decide when to stream): see [files.md](files.md#pairing) and
+   [Troubleshooting](files.md#troubleshooting).
 3. Turn on SSH so Windows can copy the program from this machine, and let it through the
    firewall:
    ```sh
@@ -293,6 +298,7 @@ synergy-tools audio receive --buffer-ms 40   # bigger buffer: fewer crackles, mo
 On Windows (the machine whose audio you want to hear):
 
 ```
+synergy-tools.exe audio send <partner>[:port]     # partner: name, name/os or host
 synergy-tools.exe audio send 192.168.1.20         # port 24850 by default
 synergy-tools.exe audio send 192.168.1.20:24850
 synergy-tools.exe audio send 192.168.1.20 --log C:\path\audio.log   # unattended, retries on errors
@@ -327,11 +333,15 @@ Superseded: `dev.sh` and `update.ps1` are gone; build with `cargo build --releas
 
 ## Firewall
 
-The receiver needs inbound UDP 24850. On the Linux machine, ufw is active (firewalld is
-not). To open it:
+The receiver needs inbound UDP 24850. In the tray it also needs inbound TCP 24851: the
+Windows tray only streams to a Linux partner that answers its presence ping on that port
+(pairing and files use it too; see [files.md](files.md#pairing) and
+[Troubleshooting](files.md#troubleshooting)). On the Linux machine, ufw is active (firewalld
+is not). To open both:
 
 ```sh
 sudo ufw allow 24850/udp
+sudo ufw allow 24851/tcp
 ```
 
 Windows only sends, so its firewall normally needs no change. If Windows asks about network

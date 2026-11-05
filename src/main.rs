@@ -26,8 +26,9 @@ const USAGE: &str = "usage:
   synergy-tools files send [--to <name>] <file>...
                                         send files to the online partner (--to if several are online)
   synergy-tools files listen            receive files without the tray app
-  synergy-tools audio send <host[:port]> [--log <file>]
-                                        stream this PC's sound to a partner (default port 24850);
+  synergy-tools audio send <partner>[:port] [--log <file>]
+                                        stream this PC's sound to a partner (name, name/os or host;
+                                        default port 24850);
                                         --log: status to <file> (emptied past 1 MiB), retry on errors
   synergy-tools audio receive [--buffer-ms N]
                                         play a partner's sound (default buffer 20 ms)

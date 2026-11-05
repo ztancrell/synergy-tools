@@ -74,6 +74,8 @@ const PING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// True only if `p` answers a presence ping (`H` + id + handshake) within about a second.
 pub fn ping(p: &Partner) -> bool {
+    // ponytail: the DNS lookup in resolve has no timeout; a slow resolver stalls the presence
+    // thread (not the tray loop). Resolve on a thread with a deadline if that bites.
     let Ok(addr) = config::resolve(&p.host, crate::PORT) else { return false };
     let Ok(s) = TcpStream::connect_timeout(&addr, PING_TIMEOUT) else { return false };
     let _ = s.set_read_timeout(Some(PING_TIMEOUT));
