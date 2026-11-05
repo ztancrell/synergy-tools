@@ -226,6 +226,8 @@ or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s,
   what the other PC says it is (its computer name), not proof of identity.
 - The secrets sit unencrypted in the `partners` file, readable only by you on Linux and macOS.
 - Received names are sanitised and files are never overwritten or made executable (Linux and macOS).
+- Received files are marked as downloaded (quarantine on macOS, Mark of the Web on Windows); a receive
+  fails rather than keep an unmarked file.
 - LAN only; nothing goes through the internet.
 
 ## License
