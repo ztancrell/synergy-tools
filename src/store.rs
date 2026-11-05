@@ -115,6 +115,8 @@ impl Incoming {
         unreachable!()
     }
 
+    // ponytail: dropping does the same; kept as the explicit spelling of the Task 2 interface.
+    #[allow(dead_code)]
     pub fn abort(self) {}
 }
 
