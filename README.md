@@ -10,3 +10,15 @@ and mouse between computers but not audio or file drag-and-drop.
 
 Both pair the two machines once with an 8-digit code, and their traffic is encrypted and
 authenticated. Each tool has its own repo, releases and install steps; see its README.
+
+Each tool is tracked here as a git submodule. To get everything in one clone:
+
+```sh
+git clone --recurse-submodules https://github.com/ztancrell/synergy-tools.git
+```
+
+To move the submodules to the latest commit of their tracked branch:
+
+```sh
+git submodule update --remote
+```
