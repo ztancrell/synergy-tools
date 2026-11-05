@@ -5,7 +5,8 @@
 A companion to [synergy-audio](../synergy-audio): two PCs on the same LAN share keyboard and
 mouse with Synergy 3, which can't move files between them. This program moves files
 between them in **both directions**: a Mac running Windows through Boot Camp, and a Linux PC
-(CachyOS, probably KDE Plasma on Wayland). You drop files on a small window, or right-click
+(CachyOS, Openbox window manager with a tint2 panel on X11, Thunar file manager, dunst
+notifications). You drop files on a small window, or right-click
 them and pick "Send to other PC", and they show up in the other machine's Downloads folder.
 
 Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
@@ -16,8 +17,8 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
 - Two ways to send, on both OSes:
   - **Drop window:** a small always-on-top square near a screen edge. Drag files onto it
     to send them.
-  - **Right-click "Send to other PC":** in the Windows Explorer *Send to* menu, and in the
-    Dolphin (KDE) and Nautilus (GNOME) right-click menus.
+  - **Right-click "Send to other PC":** in the Windows Explorer *Send to* menu, and in
+    Thunar's *Send To* menu on Linux (Dolphin/Nautilus entries are cheap extras).
 - **Tray icon** on both sides, for status (connected or not, a transfer in progress) and a
   small menu: show or hide the drop window, pairing, quit. Tray icons can't accept dropped
   files on Windows or Linux, so the tray is not a drop target.
@@ -56,9 +57,10 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
   The program listens on a TCP port next to synergy-audio's (synergy-audio uses UDP 24850,
   so use 24851). The autostart and install scripts open it in the firewall the way
   synergy-audio's do.
-- Linux side must work on KDE Plasma Wayland. Wayland doesn't let apps position their own
-  windows or always keep them on top. The drop window must still work there, even if its
-  placement is left to the compositor (e.g. a KDE window rule or "keep above").
+- Linux side must work on the user's actual desktop: Openbox + tint2 on X11 (tint2's tray is
+  the older XEmbed kind, not KDE/GNOME's StatusNotifierItem). KDE/GNOME Wayland support is
+  nice-to-have, not required.
+  Superseded: the first draft assumed KDE Plasma on Wayland; checked 2026-11-04, it's Openbox/X11.
 - Windows 10/11, 64-bit.
 - Pairing and file transfer go over an authenticated connection, encrypted too (my call:
   it's cheap and files may be private). The library and protocol are up to the builder.
@@ -92,6 +94,10 @@ Typical files: `.exe`, `.zip`, screenshots. Nothing over about 100 MB.
 - 2026-11-04: Windows setup asks for admin once (one UAC prompt) to add an inbound firewall
   rule for TCP 24851, covering Private and Public networks (Boot Camp Wi-Fi is often
   "Public"). synergy-audio's Windows script never needed this, since that side only sends.
+
+- 2026-11-04: Linux target is Openbox + tint2 on X11 with Thunar (found by checking the running
+  session). Tray uses XEmbed-compatible appindicator fallback; right-click entry goes in
+  Thunar's Send To menu; autostart also via `~/.config/openbox/autostart`. (My call.)
 
 ## Open questions
 

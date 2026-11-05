@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust 2021, stable. Crates: `snow 0.10` (Noise), `spake2 0.4` (pairing), `sha2 0.10`, `getrandom 0.3` (same set and versions as synergy-audio; newer sha2 0.11 / getrandom 0.4 exist but would duplicate what snow and spake2 pull in), `dirs 7` (Downloads + config dirs), `tao 0.37` (drop window, GTK3 on Linux so file drop works on Wayland), `tray-icon 0.26` (feature `ksni` on Linux: pure D-Bus StatusNotifierItem, no libappindicator), `notify-rust 4` (Linux notifications), `tauri-winrt-notification 0.8` (Windows toasts with click callback). Nothing else.
 
+> **Superseded in part (2026-11-04):** the Linux desktop is Openbox + tint2 on X11 with Thunar, not KDE Plasma Wayland. Tasks 7, 8 and 10 follow the rulings in DESIGN.md "Decided": no Wayland spike needed; `tray-icon` with its default Linux backend (libappindicator, which falls back to an XEmbed icon that tint2 shows), not `ksni`; Thunar Send To entry (`~/.local/share/Thunar/sendto/`) plus Openbox autostart.
+
 **Spec:** `/home/zpt/projects/synergy-dragndrop/DESIGN.md` (source of truth, including "Decided"). Sibling for conventions: `/home/zpt/projects/synergy-audio` (`src/main.rs`, `install-autostart.sh/.ps1`, `.github/workflows/ci.yml` + `release.yml`, `README.md`).
 
 ## Global Constraints
