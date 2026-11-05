@@ -1,6 +1,7 @@
 // ponytail: items are used by later tasks; drop this allow once the CLI is wired up.
 #![allow(dead_code)]
 mod config;
+mod proto;
 mod store;
 
 pub(crate) const PORT: u16 = 24851;
