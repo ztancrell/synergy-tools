@@ -94,6 +94,9 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
   `%LOCALAPPDATA%\synergy-dragndrop`, `%APPDATA%\synergy-audio`, `%APPDATA%\synergy-dragndrop`
   and `%APPDATA%\Microsoft\Windows\SendTo\Send to other PC.lnk`; remove firewall rule
   `synergy-dragndrop (TCP 24851)` (needs admin).
+  Phase 3 fix wave (final review I2, Minor 1): after the two kills it runs the old `unmute`
+  again (a running old sender re-mutes) and waits up to 5 s for the old processes to exit;
+  the order above is otherwise unchanged (src/install.rs `windows()`).
 - **Linux autostart** = launch the tray at desktop login, which replaces the systemd
   receiver service. Headless audio stays possible through the command line
   (`audio receive`), documented but not installed by default; it must not run at the

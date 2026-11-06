@@ -316,6 +316,13 @@ fn sendto_ps(lnk: &Path, exe: &Path) -> String {
     )
 }
 
+/// Through the shell: the tray inherits none of install's handles (so `install | Out-Host`
+/// returns) and runs un-elevated even when install runs as administrator.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_start(exe: &Path) -> Vec<String> {
+    cmd(&["explorer.exe", &exe.display().to_string()])
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_dir(p: &Places) -> PathBuf {
     p.local.join("Programs").join("synergy-tools")
@@ -366,6 +373,10 @@ pub fn windows(p: &Places, install: bool) -> Vec<Step> {
         Try(cmd(&["schtasks", "/Delete", "/TN", "synergy-dragndrop", "/F"])),
         Try(cmd(&["taskkill", "/F", "/IM", "synergy-audio.exe"])),
         Try(cmd(&["taskkill", "/F", "/IM", "synergy-dragndrop.exe"])),
+        // Again: a running old sender re-mutes after the first unmute, until it's killed.
+        Try(cmd(&[&s(&old("synergy-audio").join("synergy-audio.exe")), "unmute"])),
+        // taskkill returns before the processes are gone (their exes stay locked until then).
+        Try(ps("Wait-Process -Name synergy-audio,synergy-dragndrop -Timeout 5 -ErrorAction SilentlyContinue".into())),
         Delete(old("synergy-audio")),
         Delete(old("synergy-dragndrop")),
         Delete(p.config.join("synergy-audio")),
@@ -538,7 +549,14 @@ fn run_cmd(c: &[String]) -> bool {
 /// Start the installed tray (`argv`; `shown` in messages) unless one already holds TCP `PORT`.
 fn start_tray(shown: &Path, argv: &[&std::ffi::OsStr]) {
     use std::process::{Command, Stdio};
-    if std::net::TcpListener::bind(("0.0.0.0", crate::PORT)).is_err() {
+    // Retry ~2 s: an old program just killed by cleanup may still hold the port.
+    let busy = (0..10).all(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        std::net::TcpListener::bind(("0.0.0.0", crate::PORT)).is_err()
+    });
+    if busy {
         println!(
             "a synergy-tools tray is already running: Quit it from its menu and start {} to use this version",
             shown.display()
@@ -604,7 +622,8 @@ pub fn install() -> Result<(), String> {
     for n in notes {
         println!("{n}");
     }
-    start_tray(&exe, &[exe.as_os_str()]);
+    let argv = windows_start(&exe);
+    start_tray(&exe, &argv.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>());
     Ok(())
 }
 
@@ -612,6 +631,7 @@ pub fn install() -> Result<(), String> {
 pub fn uninstall() -> Result<(), String> {
     let p = places()?;
     let notes = apply(&windows(&p, false), &mut run_cmd)?;
+    crate::audio::mute::restore(); // the killed tray may have muted the speakers
     println!("uninstalled {} (pairings kept in {})", installed_exe(&p).display(), p.config.join("synergy-tools").display());
     for n in notes {
         println!("{n}");
@@ -796,6 +816,8 @@ mod tests {
             Try(v(&["schtasks", "/Delete", "/TN", "synergy-dragndrop", "/F"])),
             Try(v(&["taskkill", "/F", "/IM", "synergy-audio.exe"])),
             Try(v(&["taskkill", "/F", "/IM", "synergy-dragndrop.exe"])),
+            Try(v(&[&s(&l.join("synergy-audio").join("synergy-audio.exe")), "unmute"])),
+            Try(ps("Wait-Process -Name synergy-audio,synergy-dragndrop -Timeout 5 -ErrorAction SilentlyContinue".into())),
             Delete(l.join("synergy-audio")),
             Delete(l.join("synergy-dragndrop")),
             Delete(c.join("synergy-audio")),
@@ -803,23 +825,29 @@ mod tests {
             Delete(windows_lnk(&p)),
             Admin(ps(firewall_ps(&exe_t))),
         ];
-        assert_eq!(&windows(&p, true)[..13], &want[..]);
+        assert_eq!(&windows(&p, true)[..15], &want[..]);
         let lnk = s(&windows_lnk(&p));
         assert!(lnk.ends_with("Send to other PC.lnk") && lnk.contains("SendTo"));
+    }
+
+    #[test]
+    fn windows_tray_starts_through_explorer() {
+        let (_, exe_t, _) = wp();
+        assert_eq!(windows_start(&exe_t), cmd(&["explorer.exe", &s(&exe_t)]));
     }
 
     #[test]
     fn windows_adds() {
         let (p, exe_t, _) = wp();
         let v = windows(&p, true);
-        assert_eq!(v.len(), 16);
-        assert_eq!(v[13], Copy(p.exe.clone(), exe_t.clone()));
-        let Run(reg) = &v[14] else { panic!("{:?}", v[14]) };
+        assert_eq!(v.len(), 18);
+        assert_eq!(v[15], Copy(p.exe.clone(), exe_t.clone()));
+        let Run(reg) = &v[16] else { panic!("{:?}", v[16]) };
         assert_eq!(&reg[..7], &cmd(&["reg", "add", RUN_KEY, "/v", "synergy-tools", "/t", "REG_SZ"])[..]);
         assert_eq!(reg[7], "/d");
         assert_eq!(reg[8], format!("\"{}\"", s(&exe_t)));
         assert_eq!(reg[9], "/f");
-        let Run(c) = &v[15] else { panic!("{:?}", v[15]) };
+        let Run(c) = &v[17] else { panic!("{:?}", v[17]) };
         assert_eq!(&c[..4], &cmd(&["powershell", "-NoProfile", "-NonInteractive", "-Command"])[..]);
         assert!(c[4].contains("Send to other PC.lnk"));
         assert!(c[4].contains("$s.Arguments='files send'"));

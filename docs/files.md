@@ -51,7 +51,7 @@ Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3`
 ### Windows
 
 Download `synergy-tools-windows-x86_64.exe` from the Releases page, then in
-PowerShell, in the folder it is in:
+PowerShell (a normal one; no administrator needed), in the folder it is in:
 
 ```powershell
 .\synergy-tools-windows-x86_64.exe install | Out-Host
@@ -62,7 +62,8 @@ Windows SmartScreen may say "Windows protected your PC" (the program is unsigned
 
 - removes the old programs: runs the old `synergy-audio.exe unmute` if it exists; stops and
   unregisters the scheduled tasks `synergy-audio` and `synergy-dragndrop` and kills those
-  processes; deletes `%LOCALAPPDATA%\synergy-audio`, `%LOCALAPPDATA%\synergy-dragndrop`,
+  processes, runs the old `unmute` once more (a running old sender mutes again until it is killed)
+  and waits up to 5 seconds for those processes to exit; deletes `%LOCALAPPDATA%\synergy-audio`, `%LOCALAPPDATA%\synergy-dragndrop`,
   `%APPDATA%\synergy-audio`, `%APPDATA%\synergy-dragndrop` and the old Send To entry (their
   pairings don't work with synergy-tools: pair again); then tries to remove the old firewall rule
   `synergy-dragndrop (TCP 24851)` and add `synergy-tools (TCP 24851)` (inbound TCP 24851, private
@@ -73,14 +74,20 @@ Windows SmartScreen may say "Windows protected your PC" (the program is unsigned
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator, no scheduled task);
 - adds "Send to other PC" to the Explorer Send To menu
   (`%APPDATA%\Microsoft\Windows\SendTo\Send to other PC.lnk`, running `synergy-tools files send`);
-- starts the tray. If a tray already runs it says so instead: Quit that one from its menu and
+- starts the tray through Explorer (`explorer.exe <installed exe>`), so it runs as you, not as
+  administrator, and `install | Out-Host` returns to the prompt. If something still holds TCP 24851
+  after about 2 seconds (a tray already runs) it says so instead: Quit that one from its menu and
   start the installed program.
+
+After install the program is `%LOCALAPPDATA%\Programs\synergy-tools\synergy-tools.exe` (not on
+PATH); the downloaded file can be deleted. Commands below use that path.
 
 To update, run the new program's `install` again (safe to repeat; the running tray keeps working
 until you Quit it and start it again). Your pairings (`%APPDATA%\synergy-tools`) are kept.
 
 Superseded: the old scheduled tasks and manual copy; synergy-tools install replaces them
-(src/install.rs).
+(src/install.rs). Superseded: commands written as `.\synergy-tools.exe …`; after install use the
+installed path above.
 
 ### macOS
 
@@ -143,8 +150,11 @@ fine). Only the booted one shows online. On the command line name them `<name>/<
    copy the command from its text) or run `synergy-tools pair`. It prints a
    code like `1234-5678` and the command to run on the other PC. The code works for one attempt
    and expires after 2 minutes.
-2. On PC 2 run `synergy-tools pair <PC 1's address> 1234-5678`
-   (Windows: `.\synergy-tools.exe pair <address> 1234-5678 | Out-Host`).
+2. On PC 2 type the shown command: on Linux `synergy-tools pair <PC 1's address> 1234-5678`
+   (`~/.local/bin` is on PATH on most desktops, else `~/.local/bin/synergy-tools`), on Windows
+   `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" pair <address> 1234-5678 | Out-Host`,
+   on macOS `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools pair <address> 1234-5678`.
+   Easiest: use **Pair…** on the Windows or Mac tray, then type the command it shows on Linux.
 
 Both sides print or show `Paired with <the other PC's name>` and the tray icons turn green. A wrong
 code fails on both sides and the code is spent: start again with a new one.
@@ -216,7 +226,9 @@ synergy-tools uninstall               undo install (pairings are kept)
 synergy-tools --version
 ```
 
-On Windows use `.\synergy-tools.exe ... | Out-Host`. `<host>` is an IP address or name,
+After install, Linux runs `synergy-tools` from `~/.local/bin` (on PATH on most desktops, else
+use the full path); Windows uses `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" ... | Out-Host`; macOS uses
+`~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools ...`. `<host>` is an IP address or name,
 optionally `:port` (default 24851). `files send` takes files only (folders are refused: zip them first)
 and first checks which partners are online (about a second): with nobody online it fails with
 `not sent: no partner online`, with several it asks for `--to <name>` (`--to` picks among the
@@ -262,7 +274,8 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 - **`not sent: other PC unreachable`** (after 3 seconds): the other PC is off, the address in the
   pairing is out of date (`synergy-tools partner <name> <new address>`; a fixed address for it in your
   router avoids this), or its firewall blocks TCP 24851. Open TCP 24851 there (on Windows `install` adds the rule
-  `synergy-tools (TCP 24851)` itself when run as administrator, or prints the command; by hand:
+  `synergy-tools (TCP 24851)` itself when run as administrator, otherwise it prints a script to paste
+  into an administrator PowerShell; by hand:
   `New-NetFirewallRule -DisplayName 'synergy-tools (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Profile Private,Public -Action Allow` as administrator).
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: pair again; pairing with the same PC (same name and OS) replaces its
@@ -286,14 +299,15 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 
 ## Uninstall
 
-Linux: `synergy-tools uninstall` stops the tray and removes what `install` added (the binary in
+Linux: `synergy-tools uninstall` (or `~/.local/bin/synergy-tools uninstall`) stops the tray and removes what `install` added (the binary in
 `~/.local/bin`, the autostart entry, the three "Send to other PC" entries). Pairings are kept;
 delete `~/.config/synergy-tools` to forget them.
 
-Windows: `.\synergy-tools.exe uninstall | Out-Host` stops the tray and removes the Run value, the Send To
+Windows: `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" uninstall | Out-Host` stops the tray, unmutes the speakers if
+the tray had muted them, and removes the Run value, the Send To
 entry and the firewall rule `synergy-tools (TCP 24851)` (that one needs administrator rights,
-otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-tools`. Run from
-the installed program itself, it can't delete its own folder: delete the folder by hand.
+otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-tools`. The installed program can't delete its
+own folder, so it says so: delete that folder by hand afterwards.
 Pairings are kept; delete `%APPDATA%\synergy-tools` to forget them.
 
 macOS: `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools uninstall` stops the tray and

@@ -89,7 +89,8 @@ What this is built and tested on:
   `synergy-tools` tray as the receiver (set up by `synergy-tools install`).
 - **Gaming machine: MacBook Pro 2019** (Intel i9, Radeon Pro 5500M 8 GB, 32 GB RAM, 1 TB)
   running **Windows 10 through Boot Camp** (with FlexTPM), on Wi-Fi. Synergy 3 client. Plays
-  **Battlefield 6**. Runs `synergy-tools audio send`.
+  **Battlefield 6**. Runs the `synergy-tools` tray as the sender, started at login by
+  `synergy-tools install`; it streams by itself. (Superseded: `synergy-tools audio send` by hand.)
 
 ```
 keyboard + mouse:  CachyOS desktop --(Synergy 3)--> MacBook Pro (Windows 10)
@@ -178,10 +179,13 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 ### Every update after that, autostart
 
-Linux: download or build the new binary, run `./synergy-tools-linux-x86_64 install` again, then Quit the tray
-and start it again (`~/.local/bin/synergy-tools`). Windows: copy the new `synergy-tools.exe`
-over as in steps 5-8, run `.\synergy-tools.exe install | Out-Host` again, then Quit the tray and start it
-again (from the Start menu search or `%LOCALAPPDATA%\Programs\synergy-tools`).
+Linux, release download: `chmod +x synergy-tools-linux-x86_64 && ./synergy-tools-linux-x86_64 install`.
+Linux, built from source: `cargo build --release && target/release/synergy-tools install`. Then Quit the
+tray and start it again (`~/.local/bin/synergy-tools`; `~/.local/bin` is on PATH on most desktops).
+Windows: copy the new `synergy-tools.exe` over as in steps 5-8 (or download
+`synergy-tools-windows-x86_64.exe`), run its `install | Out-Host` in that folder, then Quit the tray and
+start it again (`& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe"`).
+Superseded: the update line that ran the release asset name after a source build.
 
 Superseded: dev scripts, Linux and Windows autostart and the update script are gone; the
 tray starts audio by itself and `synergy-tools install` (src/install.rs) sets up Linux and Windows.
@@ -338,6 +342,11 @@ synergy-tools.exe audio unmute                    # undo auto-mute left by a kil
 ```
 
 On macOS, `./synergy-tools audio send <partner>` works the same (no `--log` console notes, no `unmute`).
+
+After install the program is `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" … | Out-Host`
+on Windows and `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools …` on macOS; on Linux
+`~/.local/bin/synergy-tools` (usually on PATH). `uninstall` on Windows also unmutes the speakers if
+the tray had muted them.
 
 `synergy-tools --version` prints the version.
 

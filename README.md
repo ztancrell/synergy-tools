@@ -45,7 +45,7 @@ audio (formerly synergy-audio), history kept via `git mv`.
 ```
 src/                    the synergy-tools crate (audio.rs is the audio engine)
 docs/                   files.md, audio.md, history/, superpowers/ (specs, plans)
-.github/workflows/      ci.yml
+.github/workflows/      ci.yml, release.yml
 ```
 
 ## Build
