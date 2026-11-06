@@ -11,6 +11,13 @@ and mouse between computers but not audio or file drag-and-drop.
 Both pair the two machines once with an 8-digit code, and their traffic is encrypted and
 authenticated. Usage steps are in each tool's README.
 
+### Pairing
+
+`synergy-tools` pairs with an 8-digit code (`synergy-tools pair` on one PC, `synergy-tools pair
+<host> <code>` on the other). Pairing again with another PC adds a partner, so one PC can have
+several; `synergy-tools partners` lists them. Audio joins this pairing when it moves into
+`synergy-tools`; until then `synergy-audio` pairs on its own. Details: [docs/files.md](docs/files.md#pairing).
+
 ## Layout
 
 The `synergy-tools` program is the Rust crate at the repo root (`Cargo.toml`, `src/`), formerly

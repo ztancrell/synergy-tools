@@ -1,4 +1,4 @@
-//! Drop window: a small always-on-top window; files dropped on it are sent to the paired PC.
+//! Drop window: a small always-on-top window; files dropped on it are sent to the partner.
 //! State is shown in the window title (no drawing crate).
 
 use crate::{config, notify, pair, transfer};
@@ -226,7 +226,7 @@ fn status_text(paired: Option<&str>) -> String {
     }
 }
 
-/// How often the peer file is re-read, so an `unpair` from a terminal shows up.
+/// How often the partners file is re-read, so an `unpair` from a terminal shows up.
 const PEER_CHECK: Duration = Duration::from_secs(10);
 
 fn tray_icon_for(s: TrayState) -> Icon {
@@ -385,7 +385,7 @@ fn start() -> Result<(), String> {
                 let proxy = proxy.clone();
                 std::thread::spawn(move || {
                     let res = transfer::check_files(&files)
-                        .and_then(|_| transfer::send_files(&config::load_peer()?, &files));
+                        .and_then(|_| transfer::send_files(&transfer::only_partner(config::load_partners()?, None)?, &files));
                     let _ = proxy.send_event(UserEvent::SendDone(files.len(), res));
                 });
             }
@@ -414,10 +414,10 @@ fn start() -> Result<(), String> {
                     next_peer_check = Instant::now();
                     notify::received(&r)
                 }
-                transfer::Event::Paired(ip) => {
+                transfer::Event::Paired(name) => {
                     code = None;
                     next_peer_check = Instant::now();
-                    notify::info(&format!("Paired with {ip}"));
+                    notify::info(&format!("Paired with {name}"));
                 }
                 transfer::Event::PairFailed(e) => {
                     code = None;
@@ -431,7 +431,7 @@ fn start() -> Result<(), String> {
                     error_until = Some(Instant::now() + ERROR_FOR);
                 }
                 // A stranger knocking is logged by the listener's caller in the CLI; here it is only noise.
-                transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not the paired PC"),
+                transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not a partner"),
             },
             Event::UserEvent(UserEvent::Menu(id)) => {
                 if id == *quit.id() {
@@ -466,7 +466,11 @@ fn start() -> Result<(), String> {
                     code = None;
                 }
                 if now >= next_peer_check {
-                    peer = config::load_peer().ok().map(|p| p.host);
+                    // Names of all partners, or None when there are none.
+                    peer = config::load_partners()
+                        .ok()
+                        .filter(|ps| !ps.is_empty())
+                        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
                     next_peer_check = now + PEER_CHECK;
                 }
             }

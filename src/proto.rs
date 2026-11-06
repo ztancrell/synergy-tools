@@ -1,7 +1,8 @@
 //! Encrypted wire layer shared by pairing and transfers.
 //!
-//! Frame: `u16` big-endian length + bytes. A connection starts with one mode byte
-//! (`b'P'` pairing, `b'S'` session), then frames.
+//! Frame: `u16` big-endian length + bytes. A connection starts with one mode byte:
+//! `b'P'` pairing, then frames; `b'S'` session, then the 8-byte partner id (which tells the
+//! listener whose secret to use), then frames.
 //!
 //! Session: `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = pairing secret, prologue
 //! `synergy-tools files v1`. The client sends handshake message 1, the server replies with
@@ -86,24 +87,24 @@ fn noise(psk: &[u8; 32]) -> snow::Builder<'_> {
 }
 
 impl<S: Read + Write> Session<S> {
-    /// Writes the mode byte `S`, then runs the handshake as initiator.
-    pub fn client(mut s: S, psk: &[u8; 32]) -> Result<Self, String> {
+    /// Writes the mode byte and the partner id, then runs the handshake as initiator.
+    pub fn client(mut s: S, mode: u8, id: &[u8; 8], psk: &[u8; 32]) -> Result<Self, String> {
         let mut hs = noise(psk).build_initiator().map_err(|e| e.to_string())?;
         let mut buf = [0u8; 256];
         let n = hs.write_message(&[], &mut buf).map_err(|e| e.to_string())?;
-        s.write_all(b"S").map_err(|e| format!("connection failed: {e}"))?;
+        s.write_all(&[&[mode][..], id].concat()).map_err(|e| format!("connection failed: {e}"))?;
         write_frame(&mut s, &buf[..n]).map_err(|e| format!("handshake failed: {e}"))?;
         let reply = read_frame(&mut s).map_err(|e| format!("handshake failed: {e}"))?;
-        hs.read_message(&reply, &mut buf).map_err(|_| "handshake failed: not the paired PC".to_string())?;
+        hs.read_message(&reply, &mut buf).map_err(|_| "handshake failed: not a partner".to_string())?;
         Ok(Session { s, t: hs.into_transport_mode().map_err(|e| e.to_string())? })
     }
 
-    /// Runs the handshake as responder; the caller has already consumed the mode byte.
+    /// Runs the handshake as responder; the caller has already consumed the mode byte and id.
     pub fn server(mut s: S, psk: &[u8; 32]) -> Result<Self, String> {
         let mut hs = noise(psk).build_responder().map_err(|e| e.to_string())?;
         let mut buf = [0u8; 256];
         let first = read_frame(&mut s).map_err(|e| format!("handshake failed: {e}"))?;
-        hs.read_message(&first, &mut buf).map_err(|_| "handshake failed: not the paired PC".to_string())?;
+        hs.read_message(&first, &mut buf).map_err(|_| "handshake failed: not a partner".to_string())?;
         let n = hs.write_message(&[], &mut buf).map_err(|e| e.to_string())?;
         write_frame(&mut s, &buf[..n]).map_err(|e| format!("handshake failed: {e}"))?;
         Ok(Session { s, t: hs.into_transport_mode().map_err(|e| e.to_string())? })
@@ -160,7 +161,7 @@ mod tests {
         assert!(Msg::decode(b"F\0\0\0\0\0\0\0\x01\xff").is_err());
     }
 
-    /// Connected loopback pair: (client side, server side with the mode byte consumed).
+    /// Connected loopback pair: (client side, server side; `serve` consumes mode byte and id).
     fn pair() -> (TcpStream, TcpStream) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
@@ -171,12 +172,12 @@ mod tests {
         (c, s)
     }
 
-    /// Server side of `pair()` must consume the mode byte, as the real listener will.
+    /// Server side of `pair()` must consume the mode byte and id, as the real listener will.
     fn serve(mut s: TcpStream, psk: [u8; 32]) -> std::thread::JoinHandle<Result<Session<TcpStream>, String>> {
         std::thread::spawn(move || {
-            let mut mode = [0u8; 1];
+            let mut mode = [0u8; 9];
             s.read_exact(&mut mode).unwrap();
-            assert_eq!(&mode, b"S");
+            assert_eq!(&mode, b"S\x01\x01\x01\x01\x01\x01\x01\x01");
             Session::server(s, &psk)
         })
     }
@@ -185,7 +186,7 @@ mod tests {
     fn session_same_psk_talks() {
         let (c, s) = pair();
         let h = serve(s, [7; 32]);
-        let mut client = Session::client(c, &[7; 32]).unwrap();
+        let mut client = Session::client(c, b'S', &[1; 8], &[7; 32]).unwrap();
         let mut server = h.join().unwrap().unwrap();
         let file = Msg::File { size: 5, name: "a.zip".into() };
         client.send(&file).unwrap();
@@ -198,7 +199,7 @@ mod tests {
     fn chunk_fits_and_oversize_is_refused() {
         let (c, s) = pair();
         let h = serve(s, [7; 32]);
-        let mut client = Session::client(c, &[7; 32]).unwrap();
+        let mut client = Session::client(c, b'S', &[1; 8], &[7; 32]).unwrap();
         let mut server = h.join().unwrap().unwrap();
         client.send(&Msg::Data(vec![9; CHUNK])).unwrap();
         assert_eq!(server.recv().unwrap(), Msg::Data(vec![9; CHUNK]));
@@ -209,7 +210,7 @@ mod tests {
     fn session_wrong_psk_fails() {
         let (c, s) = pair();
         let h = serve(s, [1; 32]);
-        let client = Session::client(c, &[2; 32]);
+        let client = Session::client(c, b'S', &[1; 8], &[2; 32]);
         assert!(h.join().unwrap().is_err());
         assert!(client.is_err());
     }
@@ -236,7 +237,7 @@ mod tests {
         let (c, s) = pair();
         let h = serve(s, [7; 32]);
         let log = Arc::new(Mutex::new(Vec::new()));
-        let mut client = Session::client(Tap(c, log.clone()), &[7; 32]).unwrap();
+        let mut client = Session::client(Tap(c, log.clone()), b'S', &[1; 8], &[7; 32]).unwrap();
         let mut server = h.join().unwrap().unwrap();
         client.send(&Msg::File { size: 1, name: "secret-name.zip".into() }).unwrap();
         assert_eq!(server.recv().unwrap(), Msg::File { size: 1, name: "secret-name.zip".into() });

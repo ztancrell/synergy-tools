@@ -4,7 +4,7 @@
 
 Sends files between a Windows PC and a Linux PC on the same LAN, for machines that share
 keyboard and mouse with Synergy 3 (which cannot drag files across). Both machines run the
-same program: each one can send files to, and receive files from, the one paired partner.
+same program: each one can send files to, and receive files from, its paired partners.
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
@@ -31,8 +31,10 @@ ends in `| Out-Host`; the alternative is
 
 ### Pairing
 
-Pair once; the pairing is remembered on both PCs. The two PCs must reach each other on TCP port
-**24851** (open it in the firewall).
+Pair once per PC; the pairing is remembered on both PCs. Pairing with another PC adds it to the
+partner list, so one PC can have several partners (a Boot Camp Mac with Windows and macOS on one
+address counts as two). The two PCs must reach each other on TCP port **24851** (open it in the
+firewall).
 
 1. On PC 1 either use the tray menu **Pair…** (the code shows in the drop window's title and in a
    notification, with the command for the other PC; clicking that notification copies the command,
@@ -42,11 +44,20 @@ Pair once; the pairing is remembered on both PCs. The two PCs must reach each ot
 2. On PC 2 run `synergy-tools pair <PC 1's address> 1234-5678`
    (Windows: `.\synergy-tools.exe pair <address> 1234-5678 | Out-Host`).
 
-Both sides print or show `Paired with ...` and the tray icons turn green. A wrong code fails on both
-sides and the code is spent: start again with a new one. If a PC's address changes, run
-`synergy-tools peer <new address>` on the other PC (the secret is kept); `synergy-tools
-unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synergy-tools/`
-(Linux, mode 0600) or `%APPDATA%\synergy-tools\` (Windows).
+Both sides print or show `Paired with <the other PC's name>` and the tray icons turn green. A wrong
+code fails on both sides and the code is spent: start again with a new one. Pairing the same PC
+again (same name and OS) replaces its old entry instead of adding a second one.
+
+- `synergy-tools partners` lists the partners, one per line: name, OS, address.
+- If a partner's address changes, run `synergy-tools partner <name> <new address>` (the secret is
+  kept, no new pairing needed).
+- `synergy-tools unpair <name>` forgets one partner.
+- With several partners, `files send` needs `--to <name>`; a drop on the drop window works only
+  while there is exactly one partner (otherwise it fails with an error naming them).
+
+`<name>` matches the partner's name (case-insensitive) or its address. The list is the file
+`partners` in `~/.config/synergy-tools/` (Linux, mode 0600) or `%APPDATA%\synergy-tools\`
+(Windows), one line per partner: `<id> <address> <secret> <os> <name>`.
 
 ## Daily use
 
@@ -61,7 +72,7 @@ unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synerg
   (results show as notifications); nothing creates one for you this phase (see Install).
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
-  out) shows the status, `Paired with <host>` or `Not paired` (the hover tooltip with the same text
+  out) shows the status, `Paired with <names>` or `Not paired` (the hover tooltip with the same text
   works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
   `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
@@ -72,18 +83,20 @@ unpair` forgets the pairing. The pairing is the file `peer` in `~/.config/synerg
 ### Command line
 
 ```
-synergy-tools                       tray app (drop window, receives files)
-synergy-tools pair                  show a code and wait for the other PC to pair
-synergy-tools pair <host> <code>    pair with the PC showing <code>
-synergy-tools peer <host>           change the paired PC's address
-synergy-tools unpair                forget the paired PC
-synergy-tools files send <file>...  send files to the paired PC
-synergy-tools files listen          receive files without the tray app
+synergy-tools                                  tray app (drop window, receives files)
+synergy-tools pair                             show a code and wait for the other PC to pair
+synergy-tools pair <host> <code>               pair with the PC showing <code> (adds a partner)
+synergy-tools partners                         list partners
+synergy-tools partner <name> <host>            change a partner's address
+synergy-tools unpair <name>                    forget a partner
+synergy-tools files send [--to <name>] <file>...  send files to a partner
+synergy-tools files listen                     receive files without the tray app
 synergy-tools --version
 ```
 
 On Windows use `.\synergy-tools.exe ... | Out-Host`. `<host>` is an IP address or name,
-optionally `:port` (default 24851). `files send` takes files only (folders are refused: zip them first)
+optionally `:port` (default 24851). `files send` goes to the only partner, or to `--to <name>` when
+there are several; it takes files only (folders are refused: zip them first)
 and fails at once, within 3 seconds, if the other PC is unreachable; nothing is queued or retried.
 If the tray app is already running it holds port 24851, so `pair` and `files listen` say so; use its tray
 menu or quit it first.
@@ -122,12 +135,14 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 ## Troubleshooting
 
 - **`not sent: other PC unreachable`** (after 3 seconds): the other PC is off, the address in the
-  pairing is out of date (`synergy-tools peer <new address>`; a fixed address for it in your
+  pairing is out of date (`synergy-tools partner <name> <new address>`; a fixed address for it in your
   router avoids this), or its firewall blocks TCP 24851. On Windows, as administrator:
   `New-NetFirewallRule -DisplayName 'synergy-tools (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Program '<path to>\synergy-tools.exe' -Profile Private,Public -Action Allow`.
   The rule covers only that exe path.
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
-- **`not sent: the other PC refused (pairing doesn't match: pair again)`**: unpair and pair again.
+- **`not sent: the other PC refused (pairing doesn't match: pair again)`**: `unpair <name>` and pair again.
+- **`several partners (...): choose one with --to <name>`**: add `--to <name>`, or `unpair` the
+  partners you no longer use.
 - **`port 24851 is busy: synergy-tools is probably already running, or the old synergy-dragndrop`**:
   another copy (or the old `synergy-dragndrop`, if it still autostarts) holds the port. Use the tray
   menu **Pair…** or quit it before running `pair` or `files listen` in a terminal.
@@ -173,21 +188,26 @@ Windows for pushes to `main` and all pull requests. There is no release workflow
 ## How it works
 
 TCP port 24851, one connection per batch. The first byte says what it is: `P` pairing, `S` session.
-Pairing runs SPAKE2 over the 8-digit code (one attempt, 120 s) and both sides keep a shared secret.
-A session is a Noise handshake (`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`) with that secret as
+Pairing runs SPAKE2 over the 8-digit code (one attempt, 120 s); the two PCs also exchange their
+name and OS, and both key confirmations cover them, so a tampered name fails the pairing. Both
+sides keep a shared secret and a partner id, the first 8 bytes of SHA-256(`synergy-tools id` +
+secret), the same on both PCs. A session starts with `S` and the sender's partner id, which tells
+the receiver whose secret to use (several partners can share one address), then a Noise handshake (`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`) with that secret as
 pre-shared key, then encrypted messages: batch header (count, sender name), then for each file a
 header (size, name), data chunks and an end marker; the receiver answers with the number saved
 or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s, stall timeout 30 s.
 
 ## Security notes
 
-- Only the paired PC can send: a connection that fails the handshake is refused and
-  `refused connection from <ip>: not the paired PC` is printed by `files listen` and `pair` in the
+- Only partners can send: a connection with an unknown partner id or a failed handshake is
+  refused and `refused connection from <ip>: not a partner` is printed by `files listen` and `pair` in the
   terminal (the tray app has no log).
 - Transfers are encrypted and authenticated, but the 8-digit code is short: pair on a network you
   trust, within the 2-minute window. Anyone who guesses it in the one attempt would be paired, so
   a failed attempt ends pairing mode.
-- The secret sits unencrypted in the `peer` file, readable only by you on Linux.
+- The secrets sit unencrypted in the `partners` file, readable only by you on Linux. The partner id
+  is sent in the clear, so someone on the LAN can tell which partner connects, but not read or
+  forge anything.
 - Received names are sanitised and files are never overwritten or made executable (Linux).
 - LAN only; nothing goes through the internet.
 
