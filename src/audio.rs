@@ -39,6 +39,7 @@ const REVOKE_EVERY: Duration = Duration::from_secs(5); // reload peers so an unp
 const SEND_QUEUE: usize = 20; // packets between capture callback and sender thread (~100 ms)
 const LOG_MAX: u64 = 1 << 20; // --log file is emptied when it grows past 1 MiB
 const RETRY_EVERY: Duration = Duration::from_secs(10);
+const BIND_RETRY_EVERY: Duration = Duration::from_secs(5);
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(500);
 const ACK_FRESH: Duration = Duration::from_millis(1500); // newer ack = receiver is playing us
 const REHANDSHAKE: Duration = Duration::from_secs(3); // no ack for this long: new handshake
@@ -191,19 +192,32 @@ fn wait(d: Duration, quit: &AtomicBool) -> bool {
     !quit.load(Relaxed)
 }
 
+/// Bind `port`, retrying every `every` while it fails (e.g. busy because an old receiver is still
+/// stopping); each failure sets `Status::Error`. None if `quit` was set meanwhile.
+fn bind_retrying(port: u16, every: Duration, sh: &Shared, quit: &AtomicBool) -> Option<UdpSocket> {
+    loop {
+        match bind_receiver(port) {
+            Ok(s) => return Some(s),
+            Err(e) => set_status(sh, Status::Error(e)),
+        }
+        if !wait(every, quit) {
+            return None;
+        }
+    }
+}
+
 /// Run audio for the tray on background threads and return at once. Receiver: bind UDP `PORT`
-/// once (busy: `Status::Error`, audio stays off) and play, retrying device errors every 10 s.
+/// (retrying every 5 s while it is busy, with `Status::Error` showing why) and play, retrying
+/// device errors every 10 s.
 /// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes.
 // ponytail: these threads have no panic guard; a panic freezes the audio line on its last
 // status. Wrap the bodies in catch_unwind and set Status::Error if that ever happens.
 pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
     std::thread::spawn(move || {
         if RECEIVER {
-            let sock = match bind_receiver(PORT) {
-                Ok(s) => s,
-                Err(e) => return set_status(&sh, Status::Error(e)),
-            };
+            // Never set: the thread is detached and ends with the process on Quit.
             let never = Arc::new(AtomicBool::new(false));
+            let Some(sock) = bind_retrying(PORT, BIND_RETRY_EVERY, &sh, &never) else { return };
             loop {
                 let r = sock.try_clone().map_err(|e| e.to_string()).and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), never.clone()));
                 if let Err(e) = r {
@@ -1019,6 +1033,21 @@ mod tests {
         let port = held.local_addr().unwrap().port();
         let e = bind_receiver(port).unwrap_err();
         assert!(e.contains("synergy-audio"), "{e}");
+    }
+
+    #[test]
+    fn receiver_bind_retries_until_free() {
+        let held = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let sh = Shared::new(true);
+        let t = {
+            let sh = sh.clone();
+            std::thread::spawn(move || bind_retrying(port, Duration::from_millis(50), &sh, &AtomicBool::new(false)))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(matches!(*sh.status.lock().unwrap(), Status::Error(_)));
+        drop(held);
+        assert!(t.join().unwrap().is_some());
     }
 
     #[test]

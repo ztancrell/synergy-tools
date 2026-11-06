@@ -26,7 +26,8 @@ The tray menu's audio section:
   `Audio: waiting for partner`, `Audio: stopped` or `Audio: error: <message>`; refreshed every
   second. A failed start (no audio device, ...) is retried every 10 s. If UDP 24850 is busy on
   Linux (an old synergy-audio receiver or a headless `audio receive` still running), the line
-  shows that error and audio stays off until the tray is restarted; files keep working.
+  shows that error and the tray retries the bind every 5 s, so audio starts by itself once the
+  old receiver is gone; files keep working.
 - `Stop audio` / `Start audio`: stops or restarts the stream on both sides; either PC can
   press it and the other follows within a second. Stopping unmutes the Windows speakers at
   once if we muted them. Stop is not saved: when both PCs restart, audio streams again.
