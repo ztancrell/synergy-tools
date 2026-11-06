@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v7
+      - run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      - uses: actions/download-artifact@v8
+        with: { path: dist }
+      - run: |
+          mkdir out
+          mv dist/synergy-tools-linux-x86_64/synergy-tools out/synergy-tools-linux-x86_64
+          mv dist/synergy-tools-windows-x86_64/synergy-tools.exe out/synergy-tools-windows-x86_64.exe
+          mv dist/synergy-tools-macos-universal/synergy-tools out/synergy-tools-macos-universal
+          gh release create "$GITHUB_REF_NAME" --generate-notes out/*
+        env: { GH_TOKEN: '${{ github.token }}' }

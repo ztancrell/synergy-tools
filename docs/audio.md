@@ -49,10 +49,10 @@ that PC as online and won't stream to it.
 On Linux the receiver is the tray: `synergy-tools install` (see
 [files.md "Install"](files.md#install)) starts it at desktop login, and the tray plays what the
 partner streams. There is no systemd receiver service any more; `install` removes the old
-`synergy-audio` one. On Windows the sender is the tray too: run `.\synergy-tools.exe install | Out-Host`
+`synergy-audio` one. On Windows the sender is the tray too: run `.\synergy-tools-windows-x86_64.exe install | Out-Host`
 (same command, see [files.md "Install"](files.md#windows)); it first runs the old
 `synergy-audio.exe unmute` if present, then removes the old `synergy-audio` scheduled task, and
-starts the tray at login. On macOS the sender is the tray too: `./synergy-tools install` (see
+starts the tray at login. On macOS the sender is the tray too: `./synergy-tools-macos-universal install` (see
 [files.md "macOS"](files.md#macos)) makes the app `~/Applications/synergy-tools.app` and starts it at
 login.
 
@@ -178,7 +178,7 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 ### Every update after that, autostart
 
-Linux: download or build the new binary, run `synergy-tools install` again, then Quit the tray
+Linux: download or build the new binary, run `./synergy-tools-linux-x86_64 install` again, then Quit the tray
 and start it again (`~/.local/bin/synergy-tools`). Windows: copy the new `synergy-tools.exe`
 over as in steps 5-8, run `.\synergy-tools.exe install | Out-Host` again, then Quit the tray and start it
 again (from the Start menu search or `%LOCALAPPDATA%\Programs\synergy-tools`).
@@ -385,11 +385,15 @@ TCP 24851 for the presence ping; see [files.md](files.md#macos).
 
 ## Releases and CI
 
-Superseded: per-tool releases end here; phase 3 adds one release workflow.
+One `v*` tag publishes the Linux, Windows and macOS binaries to a GitHub Release; see the README "CI and releases".
+
+Superseded: per-tool tags `audio-v*` / `dragndrop-v*` and their workflows; one `v*` tag now (`.github/workflows/release.yml`).
 
 ### Making a release (maintainer)
 
-Superseded: see Releases and CI above.
+Bump `version` in `Cargo.toml`, commit, `git tag v<version> && git push origin v<version>`; `release.yml` does the rest (README "CI and releases").
+
+Superseded: the per-tool release steps that stood here; see Releases and CI above.
 
 ## License
 

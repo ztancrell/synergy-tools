@@ -63,7 +63,15 @@ Windows builds are described in each tool's docs.
 
 `ci.yml` tests and builds the crate on every push and pull request in three jobs: `linux`,
 `windows` and `macos`. Warnings fail CI (`RUSTFLAGS=-D warnings`). The `macos` job also uploads a
-universal binary (arm64 + x86_64) as the workflow artifact `synergy-tools-macos-universal`: unsigned,
-downloadable from the run's page, not a release.
+universal binary (arm64 + x86_64); all three jobs upload their binary as a workflow artifact
+(`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64`, `synergy-tools-macos-universal`).
 
-Superseded: per-tool releases end here; phase 3 adds one release workflow.
+A release: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push origin v<version>`.
+`.github/workflows/release.yml` builds with `ci.yml` and publishes the three assets
+(`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64.exe`, `synergy-tools-macos-universal`)
+to a GitHub Release; the tag must match the Cargo version. The binaries are unsigned: Mac users remove
+the quarantine flag (`xattr -d com.apple.quarantine synergy-tools-macos-universal`, see
+[files.md](docs/files.md#macos)); Windows users get SmartScreen (More info > Run anyway).
+
+Superseded: per-tool tags `audio-v*` / `dragndrop-v*` and their workflows; one `v*` tag now
+(`.github/workflows/release.yml`).

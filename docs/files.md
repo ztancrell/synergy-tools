@@ -6,7 +6,7 @@ same program: each one can send files to, and receive files from, its paired par
 Files land in the Downloads folder; transfers are authenticated and encrypted after a one-time
 pairing with an 8-digit code.
 
-**Status:** v0.1.0, part of `synergy-tools` (the root crate of this repo; code in `src/`). Windows, macOS and Linux, any pair, both directions. Not released yet: build from source (see "Build from source").
+**Status:** v0.1.0, part of `synergy-tools` (the root crate of this repo; code in `src/`). Windows, macOS and Linux, any pair, both directions. Downloads are on the repo's Releases page (`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64.exe`, `synergy-tools-macos-universal`); or build from source (see "Build from source").
 
 The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME work as extras.
 
@@ -14,11 +14,11 @@ The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME 
 
 ### Linux
 
-Build the binary (see "Build from source"; release downloads come later in phase 3), then:
+Download `synergy-tools-linux-x86_64` from the Releases page (or build it, see "Build from source"), then:
 
 ```sh
-chmod +x synergy-tools
-./synergy-tools install
+chmod +x synergy-tools-linux-x86_64
+./synergy-tools-linux-x86_64 install
 ```
 
 `install` (code: `src/install.rs`):
@@ -39,7 +39,7 @@ chmod +x synergy-tools
 - starts the tray. If a tray already runs it says so instead: Quit that one from its menu and
   start `~/.local/bin/synergy-tools`.
 
-To update, get the new binary and run `./synergy-tools install` again (it is safe to repeat), then
+To update, get the new binary and run `./synergy-tools-linux-x86_64 install` again (it is safe to repeat), then
 Quit the running tray and start it again. Your pairings (`~/.config/synergy-tools`) are kept.
 
 Superseded: the per-tool install-autostart.sh scripts; synergy-tools install replaces them (src/install.rs).
@@ -50,11 +50,11 @@ Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3`
 
 ### Windows
 
-Download the Windows program (see "Build from source" until release downloads exist), then in
+Download `synergy-tools-windows-x86_64.exe` from the Releases page, then in
 PowerShell, in the folder it is in:
 
 ```powershell
-.\synergy-tools.exe install | Out-Host
+.\synergy-tools-windows-x86_64.exe install | Out-Host
 ```
 
 Windows SmartScreen may say "Windows protected your PC" (the program is unsigned): click
@@ -88,9 +88,9 @@ The downloaded binary is unsigned, so first clear Gatekeeper's quarantine mark, 
 Terminal:
 
 ```sh
-xattr -d com.apple.quarantine synergy-tools
-chmod +x synergy-tools
-./synergy-tools install
+xattr -d com.apple.quarantine synergy-tools-macos-universal
+chmod +x synergy-tools-macos-universal
+./synergy-tools-macos-universal install
 ```
 
 `install` (code: `src/install.rs`):
@@ -120,7 +120,8 @@ Quick Action by hand (only if Finder never shows it): Automator > New Document >
 
 The first time a file arrives, macOS may ask "synergy-tools would like to access files in your
 Downloads folder" ("Terminal" if you started the program from Terminal). Allow it: otherwise
-receives fail with "Operation not permitted" and the sender sees "not sent".
+receives fail with "Operation not permitted" and the sender sees "not sent". Like the System Audio
+Recording prompt, it may come back after each update (the ad-hoc re-sign changes the app's identity).
 
 Superseded: running the bare binary from Terminal with `nohup`; `install` replaces it
 (src/install.rs).
@@ -313,7 +314,7 @@ The binary is `target/release/synergy-tools`. Linux needs `libgtk-3-dev`,
 `libayatana-appindicator` and `alsa-lib`). Windows: a
 native MSVC `cargo build --release`. macOS: `xcode-select --install` and rustup, then the same
 commands. CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo build --release` on
-Ubuntu 22.04, Windows and macOS (the macOS job builds a universal binary, see the README).
+Ubuntu 22.04, Windows and macOS (each job uploads its binary as a workflow artifact: `synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64`, `synergy-tools-macos-universal`; the macOS one is universal, see the README).
 
 ## How it works
 
