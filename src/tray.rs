@@ -1,10 +1,10 @@
-//! Drop window: a small always-on-top window; files dropped on it are sent to the partner.
+//! Drop window: a small always-on-top window; files dropped on it go to the online partner
+//! (a picker menu when several are online).
 //! State is shown in the window title (no drawing crate).
 
-use crate::config::Partner;
-use crate::transfer::Target;
-use crate::audio::Status;
-use crate::{audio, config, notify, pair, transfer};
+use crate::config::{self, Partner};
+use crate::audio::{self, Status};
+use crate::{notify, pair, transfer};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,6 +16,8 @@ use tao::window::WindowBuilder;
 use tao::platform::unix::WindowExtUnix as _;
 #[cfg(windows)]
 use tao::platform::windows::WindowExtWindows as _;
+#[cfg(target_os = "macos")]
+use tao::platform::macos::{ActivationPolicy, EventLoopWindowTargetExtMacOS as _, WindowExtMacOS as _};
 use tray_icon::menu::{ContextMenu as _, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -25,11 +27,33 @@ const SIZE: f64 = 160.0;
 const MARGIN: f64 = 48.0;
 const RESET_AFTER: Duration = Duration::from_secs(3);
 
-/// How often the tray refreshes the audio line.
-const AUDIO_POLL: Duration = Duration::from_secs(1);
-
 /// How long the tray stays red after an error.
 const ERROR_FOR: Duration = Duration::from_secs(5);
+
+/// How often the tray wakes to refresh the audio line.
+const AUDIO_POLL: Duration = Duration::from_secs(1);
+const AUDIO_LINE_MAX: usize = 60;
+
+/// Audio menu line; `name_of` turns a partner id into a name. `stopped` (the user's Stop)
+/// shows as stopped while waiting, so it agrees with the "Start audio" item.
+fn audio_line(st: &Status, stopped: bool, name_of: impl Fn(&[u8; 8]) -> String) -> String {
+    let line = match st {
+        Status::Waiting if stopped => "Audio: stopped".into(),
+        Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
+        Status::Streaming(id) => format!("Audio: streaming to {}", name_of(id)),
+        Status::Stopped => "Audio: stopped".into(),
+        Status::Waiting => "Audio: waiting for partner".into(),
+        Status::Error(e) => format!("Audio: error: {e}"),
+    };
+    if line.chars().count() <= AUDIO_LINE_MAX {
+        return line;
+    }
+    line.chars().take(AUDIO_LINE_MAX - 1).chain(['…']).collect()
+}
+
+fn stop_text(stopped: bool) -> &'static str {
+    if stopped { "Start audio" } else { "Stop audio" }
+}
 
 /// Messages from worker threads and the tray menu to the event loop.
 pub enum UserEvent {
@@ -47,7 +71,7 @@ pub enum UserEvent {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     /// Linux: one finished drop, the whole batch.
     Dropped(Vec<PathBuf>),
-    /// Wake: re-read the shared online list.
+    /// The set of online partners changed: re-read the shared online list.
     Online,
 }
 
@@ -229,21 +253,10 @@ fn tray_state(paired: bool, error_active: bool, busy: bool) -> TrayState {
 }
 
 fn status_text(paired: bool, online: &[Partner]) -> String {
-    match (paired, online) {
-        (false, _) => "Not paired".into(),
-        (true, []) => "No partner online".into(),
+    match online {
+        _ if !paired => "Not paired".into(),
+        [] => "No partner online".into(),
         _ => format!("Online: {}", online.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")),
-    }
-}
-
-pub(crate) fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String {
-    match st {
-        Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
-        Status::Streaming(id) => format!("Audio: streaming to {}", name_of(id)),
-        Status::Stopped => "Audio: stopped".into(),
-        Status::Waiting => "Audio: waiting for partner".into(),
-        Status::Error(e) if e.chars().count() > 60 => format!("Audio: error: {}…", e.chars().take(60).collect::<String>()),
-        Status::Error(e) => format!("Audio: error: {e}"),
     }
 }
 
@@ -251,8 +264,8 @@ fn is_paired() -> bool {
     config::load_partners().is_ok_and(|ps| !ps.is_empty())
 }
 
-/// Send `files` to `p` on a worker thread; the result comes back as `SendDone`.
-fn spawn_send(proxy: &tao::event_loop::EventLoopProxy<UserEvent>, files: Vec<PathBuf>, p: Partner) {
+/// Check and send `files` to `p` on a worker thread; the result comes back as `SendDone`.
+fn spawn_send(proxy: &tao::event_loop::EventLoopProxy<UserEvent>, p: Partner, files: Vec<PathBuf>) {
     let proxy = proxy.clone();
     std::thread::spawn(move || {
         let res = transfer::check_files(&files).and_then(|_| transfer::send_files(&p, &files));
@@ -260,32 +273,9 @@ fn spawn_send(proxy: &tao::event_loop::EventLoopProxy<UserEvent>, files: Vec<Pat
     });
 }
 
-/// Pop up a menu of `ps` on the drop window; a choice arrives as `UserEvent::Menu`.
-fn show_picker(window: &tao::window::Window, ps: &[Partner]) -> Result<Vec<(MenuId, Partner)>, String> {
-    let menu = Menu::new();
-    let mut ids = Vec::new();
-    for p in ps {
-        let item = MenuItem::new(&p.name, true, None);
-        menu.append(&item).map_err(|e| e.to_string())?;
-        ids.push((item.id().clone(), p.clone()));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-        menu.show_context_menu_for_gtk_window(window.gtk_window().upcast_ref::<gtk::Window>(), None);
-    }
-    // SAFETY: the HWND is the live drop window's.
-    #[cfg(windows)]
-    unsafe {
-        menu.show_context_menu_for_hwnd(window.hwnd(), None);
-    }
-    Ok(ids)
-}
-
 fn tray_icon_for(s: TrayState) -> Icon {
     Icon::from_rgba(icon_rgba(s), 32, 32).expect("32x32 RGBA")
 }
-
 
 /// A tray app started at login has no visible stderr: failures also go to a notification.
 pub fn run() -> Result<(), String> {
@@ -297,10 +287,8 @@ fn start() -> Result<(), String> {
     let dir = dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())?;
     let listener = transfer::Listener::bind(crate::PORT, dir)?;
     let pairing = listener.pairing.clone();
-    let shared_online = Arc::new(Mutex::new(Vec::new()));
-    let sh = audio::Shared::new(config::auto_mute_on());
-    let audio_quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let audio_thread = audio::run_in_tray(sh.clone(), shared_online.clone(), audio_quit.clone());
+    // Shared with the presence thread (and the audio section).
+    let online: Arc<Mutex<Vec<Partner>>> = Arc::new(Mutex::new(Vec::new()));
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -323,24 +311,30 @@ fn start() -> Result<(), String> {
         });
     }
     {
-        let (shared, proxy) = (shared_online.clone(), proxy.clone());
-        std::thread::spawn(move || {
-            transfer::watch_online(shared, move || {
-                let _ = proxy.send_event(UserEvent::Online);
-            })
-        });
+        let (online, proxy) = (online.clone(), proxy.clone());
+        std::thread::spawn(move || transfer::watch_online(online, move || {
+            let _ = proxy.send_event(UserEvent::Online);
+        }));
     }
+    let sh = audio::Shared::new(config::auto_mute_on());
+    audio::mute::on_ctrl_c_restore();
+    audio::mute::restore(); // a mute left by an earlier run (e.g. shut down while streaming)
+    audio::run_in_tray(sh.clone(), online.clone());
     {
         let proxy = proxy.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             let _ = proxy.send_event(UserEvent::Menu(e.id));
         }));
     }
-    let window = WindowBuilder::new()
+    let builder = WindowBuilder::new()
         .with_title(title_for(&DropState::Idle))
         .with_inner_size(LogicalSize::new(SIZE, SIZE))
         .with_resizable(false)
-        .with_always_on_top(true)
+        .with_always_on_top(true);
+    // macOS: minimizing would send the window to the Dock, which a tray-only app hides.
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_minimizable(false);
+    let window = builder
         .build(&event_loop)
         .map_err(|e| format!("can't open the drop window: {e}"))?;
     #[cfg(target_os = "linux")]
@@ -350,21 +344,23 @@ fn start() -> Result<(), String> {
     }
     let (status, audio_item, stop_item, toggle, pair_item, quit) = (
         MenuItem::new(status_text(false, &[]), false, None),
-        MenuItem::new("", false, None), // the audio line, filled in on the first event
-        MenuItem::new("Stop audio", true, None),
+        MenuItem::new(audio_line(&Status::Waiting, false, |_| String::new()), false, None),
+        MenuItem::new(stop_text(false), true, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
         MenuItem::new("Quit", true, None),
     );
-    let sep = PredefinedMenuItem::separator;
+    #[cfg(windows)]
+    let auto_mute = tray_icon::menu::CheckMenuItem::new("Auto-mute speakers", true, sh.auto_mute.load(std::sync::atomic::Ordering::Relaxed), None);
     let menu = Menu::new();
-    let menu_err = |e: tray_icon::menu::Error| format!("can't build the tray menu: {e}");
-    menu.append_items(&[&status, &sep(), &audio_item, &stop_item]).map_err(menu_err)?;
-    #[cfg(windows)]
-    let auto_mute = tray_icon::menu::CheckMenuItem::new("Auto-mute speakers", true, config::auto_mute_on(), None);
-    #[cfg(windows)]
-    menu.append(&auto_mute).map_err(menu_err)?;
-    menu.append_items(&[&sep(), &toggle, &sep(), &pair_item, &quit]).map_err(menu_err)?;
+    let built = (|| {
+        menu.append_items(&[&status, &PredefinedMenuItem::separator(), &audio_item, &stop_item])?;
+        // Windows sender only: whether streaming mutes the speakers (saved across restarts).
+        #[cfg(windows)]
+        menu.append(&auto_mute)?;
+        menu.append_items(&[&PredefinedMenuItem::separator(), &toggle, &PredefinedMenuItem::separator(), &pair_item, &quit])
+    })();
+    built.map_err(|e| format!("can't build the tray menu: {e}"))?;
     let mut tray: Option<TrayIcon> = None;
     let mut pending: Vec<PathBuf> = Vec::new();
     let mut t = Tracker::default();
@@ -373,17 +369,13 @@ fn start() -> Result<(), String> {
     // Pairing code shown in the title until it expires.
     let mut code: Option<(String, Instant)> = None;
     let mut receiving = 0usize;
-    // ponytail: re-read on presence changes and pairing only; unpairing the last (offline) partner
-    // from a terminal shows "No partner online" until the next change or restart.
     let mut paired = is_paired();
-    let mut online: Vec<Partner> = Vec::new();
-    // Files of a drop waiting for the picker, and its menu ids. A new drop replaces them;
-    // dismissing the picker leaves nothing to clean up.
-    let mut held: Option<(Vec<PathBuf>, Vec<(MenuId, Partner)>)> = None;
+    // ponytail: a new drop replaces these; dismissing the picker leaves nothing to clean up.
+    let mut picker: Option<(Menu, Vec<(MenuItem, Partner)>, Vec<PathBuf>)> = None;
     let mut visible = true;
     let mut shown = title_for(&DropState::Idle);
     let mut shown_tray: Option<(TrayState, String)> = None;
-    let mut shown_audio: Option<(String, bool)> = None;
+    let mut shown_audio = (audio_item.text(), false);
 
     event_loop.run(move |event, target, flow| {
         match event {
@@ -397,13 +389,23 @@ fn start() -> Result<(), String> {
                         .build()
                         .map_err(|e| e.to_string())
                 }))
-                .unwrap_or_else(|_| Err("tray library missing (install libayatana-appindicator3-1)".into()));
+                .unwrap_or_else(|_| {
+                    Err(if cfg!(target_os = "linux") {
+                        "tray library missing (install libayatana-appindicator3-1)".into()
+                    } else {
+                        "tray library failed".to_string()
+                    })
+                });
                 match built {
                     Ok(i) => {
                         tray = Some(i);
                         // Tray-only app: no task list / taskbar entry. Without a tray the
                         // window stays in it, so a minimized window can't become unreachable.
+                        #[cfg(any(target_os = "linux", windows))]
                         let _ = window.set_skip_taskbar(true);
+                        // macOS: menu bar icon only, no Dock icon.
+                        #[cfg(target_os = "macos")]
+                        target.set_activation_policy_at_runtime(ActivationPolicy::Accessory);
                     }
                     Err(e) => notify::error(&format!("no tray icon, the drop window's close button now quits: {e}")),
                 }
@@ -454,21 +456,39 @@ fn start() -> Result<(), String> {
             // End of an event batch: all files of one drop have arrived.
             Event::MainEventsCleared if !pending.is_empty() => {
                 let files = std::mem::take(&mut pending);
-                held = None;
-                match transfer::target(online.clone(), None) {
-                    Ok(Target::One(p)) => {
+                let now_online = online.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                match transfer::target(now_online, None) {
+                    Ok(transfer::Target::One(p)) => {
                         t.start(files.len());
                         reset_at = None;
-                        spawn_send(&proxy, files, p);
+                        spawn_send(&proxy, p, files);
                     }
-                    Ok(Target::Several(ps)) => match show_picker(&window, &ps) {
-                        Ok(ids) => held = Some((files, ids)),
-                        Err(e) => notify::error(&format!("not sent: can't show the partner menu: {e}")),
-                    },
-                    // `target` without `to` never errs; Nobody is the only other case.
+                    Ok(transfer::Target::Several(ps)) => {
+                        let (menu, items) = (Menu::new(), ps.into_iter().map(|p| (MenuItem::new(&p.name, true, None), p)).collect::<Vec<_>>());
+                        for (i, _) in &items {
+                            let _ = menu.append(i);
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            use gtk::prelude::*;
+                            menu.show_context_menu_for_gtk_window(window.gtk_window().upcast_ref::<gtk::Window>(), None);
+                        }
+                        #[cfg(windows)]
+                        unsafe {
+                            menu.show_context_menu_for_hwnd(window.hwnd(), None);
+                        }
+                        #[cfg(target_os = "macos")]
+                        unsafe {
+                            menu.show_context_menu_for_nsview(window.ns_view(), None);
+                        }
+                        picker = Some((menu, items, files));
+                    }
+                    // Target(_, None) never errs; Nobody is the only other case.
                     _ => {
-                        t.start(files.len());
-                        let _ = proxy.send_event(UserEvent::SendDone(files.len(), Err(transfer::NOBODY_ONLINE.into())));
+                        notify::error("not sent: no partner online");
+                        error_until = Some(Instant::now() + ERROR_FOR);
+                        t.result = Some(false);
+                        reset_at = Some(Instant::now() + RESET_AFTER);
                     }
                 }
             }
@@ -487,6 +507,7 @@ fn start() -> Result<(), String> {
             }
             Event::UserEvent(UserEvent::Fatal(e)) => {
                 notify::error(&e);
+                audio::mute::restore();
                 std::process::exit(1);
             }
             Event::UserEvent(UserEvent::Listener(e)) => match e {
@@ -512,25 +533,33 @@ fn start() -> Result<(), String> {
                     error_until = Some(Instant::now() + ERROR_FOR);
                 }
                 // A stranger knocking is logged by the listener's caller in the CLI; here it is only noise.
-                transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not a partner"),
+                transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not a paired PC"),
             },
             Event::UserEvent(UserEvent::Online) => {
-                online = shared_online.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // ponytail: an unpair from a terminal shows when the online set next changes.
                 paired = is_paired();
             }
             Event::UserEvent(UserEvent::Menu(id)) => {
-                let picked = held.as_ref().and_then(|(_, ids)| ids.iter().find(|(i, _)| *i == id)).map(|(_, p)| p.clone());
-                if let (Some(p), Some((files, _))) = (picked, held.take()) {
+                // muda has already flipped the check mark; follow it. Off while muted: the
+                // sender unmutes within half a second.
+                #[cfg(windows)]
+                if id == *auto_mute.id() {
+                    let on = auto_mute.is_checked();
+                    sh.auto_mute.store(on, std::sync::atomic::Ordering::Relaxed);
+                    if let Err(e) = config::set_auto_mute(on) {
+                        notify::error(&e);
+                    }
+                }
+                let chosen = picker.as_ref().and_then(|(_, items, _)| items.iter().find(|(i, _)| *i.id() == id)).map(|(_, p)| p.clone());
+                if let Some(p) = chosen {
+                    let (_, _, files) = picker.take().expect("chosen from the picker");
                     t.start(files.len());
                     reset_at = None;
-                    spawn_send(&proxy, files, p);
+                    spawn_send(&proxy, p, files);
                 } else if id == *quit.id() {
-                    // Let `send` stop and unmute first, so it can't mute again after the restore.
-                    audio_quit.store(true, std::sync::atomic::Ordering::Relaxed);
-                    let until = Instant::now() + Duration::from_secs(1);
-                    while !audio_thread.is_finished() && Instant::now() < until {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
+                    // Quit while we have the speakers muted unmutes them; auto-mute off (not saved)
+                    // first, so the sender can't mute again before the process ends.
+                    sh.auto_mute.store(false, std::sync::atomic::Ordering::Relaxed);
                     audio::mute::restore();
                     *flow = ControlFlow::Exit;
                     return;
@@ -551,15 +580,6 @@ fn start() -> Result<(), String> {
                         pair::show_code(&c)
                     ));
                     code = Some((c, now));
-                }
-                #[cfg(windows)]
-                if id == *auto_mute.id() {
-                    let on = auto_mute.is_checked(); // muda already flipped it
-                    // Off while we have the speakers muted: the sender unmutes on its next keepalive.
-                    sh.auto_mute.store(on, std::sync::atomic::Ordering::Relaxed);
-                    if let Err(e) = config::set_auto_mute(on) {
-                        notify::error(&e);
-                    }
                 }
             }
             Event::NewEvents(_) => {
@@ -586,30 +606,32 @@ fn start() -> Result<(), String> {
             window.set_title(&title);
             shown = title;
         }
+        let status_now = status_text(paired, &online.lock().unwrap_or_else(|e| e.into_inner()));
         let ts = tray_state(paired, error_until.is_some(), t.in_flight > 0 || receiving > 0);
-        let line = status_text(paired, &online);
-        if shown_tray.as_ref() != Some(&(ts, line.clone())) {
-            status.set_text(&line);
+        if shown_tray.as_ref() != Some(&(ts, status_now.clone())) {
+            status.set_text(&status_now);
             if let Some(i) = &tray {
                 let _ = i.set_icon(Some(tray_icon_for(ts)));
-                let _ = i.set_tooltip(Some(format!("synergy-tools: {line}")));
+                let _ = i.set_tooltip(Some(format!("synergy-tools: {status_now}")));
             }
-            shown_tray = Some((ts, line));
+            shown_tray = Some((ts, status_now.clone()));
         }
-        let a = {
-            let st = sh.status.lock().unwrap_or_else(|e| e.into_inner());
-            let name_of = |id: &[u8; 8]| online.iter().find(|p| p.id == *id).map_or_else(|| config::hex(id), |p| p.name.clone());
-            (audio_line(&st, name_of), sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped)
-        };
-        if shown_audio.as_ref() != Some(&a) {
-            audio_item.set_text(&a.0);
-            stop_item.set_text(if a.1 { "Start audio" } else { "Stop audio" });
-            shown_audio = Some(a);
+        let stopped = sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped;
+        let line = audio_line(&sh.status.lock().unwrap_or_else(|e| e.into_inner()), stopped, |id| {
+            let known = online.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.id == *id).map(|p| p.name.clone());
+            known
+                .or_else(|| config::load_partners().ok()?.into_iter().find(|p| p.id == *id).map(|p| p.name))
+                .unwrap_or_else(|| config::hex(id))
+        });
+        if shown_audio != (line.clone(), stopped) {
+            audio_item.set_text(&line);
+            stop_item.set_text(stop_text(stopped));
+            shown_audio = (line, stopped);
         }
         // Computed after handling, so a timer armed above takes effect at once.
-        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW)].into_iter().flatten().min();
-        let poll = Instant::now() + AUDIO_POLL;
-        *flow = ControlFlow::WaitUntil(wake.map_or(poll, |w| w.min(poll)));
+        let next_poll = Some(Instant::now() + AUDIO_POLL);
+        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW), next_poll].into_iter().flatten().min();
+        *flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
     })
 }
 
@@ -632,15 +654,17 @@ mod tests {
 
     #[test]
     fn audio_line_texts() {
-        use crate::audio::Status;
-        let name_of = |id: &[u8; 8]| format!("pc{}", id[0]);
-        let busy = if crate::audio::RECEIVER { "Audio: receiving from pc7" } else { "Audio: streaming to pc7" };
-        assert_eq!(audio_line(&Status::Streaming([7; 8]), name_of), busy);
-        assert_eq!(audio_line(&Status::Stopped, name_of), "Audio: stopped");
-        assert_eq!(audio_line(&Status::Waiting, name_of), "Audio: waiting for partner");
-        assert_eq!(audio_line(&Status::Error("no device".into()), name_of), "Audio: error: no device");
-        let long = audio_line(&Status::Error("é".repeat(70)), name_of);
-        assert_eq!(long, format!("Audio: error: {}…", "é".repeat(60)));
+        use crate::audio::{Status, RECEIVER};
+        let name = |_: &[u8; 8]| "B".to_string();
+        let streaming = if RECEIVER { "Audio: receiving from B" } else { "Audio: streaming to B" };
+        assert_eq!(audio_line(&Status::Streaming([1; 8]), false, name), streaming);
+        assert_eq!(audio_line(&Status::Stopped, false, name), "Audio: stopped");
+        assert_eq!(audio_line(&Status::Waiting, false, name), "Audio: waiting for partner");
+        assert_eq!(audio_line(&Status::Waiting, true, name), "Audio: stopped");
+        assert_eq!(audio_line(&Status::Error("no device".into()), false, name), "Audio: error: no device");
+        let long = audio_line(&Status::Error("x".repeat(100)), false, name);
+        assert_eq!(long.chars().count(), 60);
+        assert!(long.starts_with("Audio: error: xxx") && long.ends_with('…'), "{long}");
     }
 
     #[test]

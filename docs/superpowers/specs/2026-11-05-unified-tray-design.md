@@ -49,9 +49,9 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
    online; if several are online, the drop window / "Send to" lets the user pick.
    The tray status line lists online partners.
 7. **Platforms: Windows, Linux and macOS** (user decision). macOS gets the full tray:
-   Audio (sender) **and Files**, which means porting file-sending (drop window, tray,
-   a Finder "send" integration in place of Windows' right-click "Send to") to macOS.
-   macOS gets a release artifact and login autostart.
+   Audio (sender) **and Files**, which means porting file-sending (drop window, tray) to
+   macOS. The Finder "send" entry, the macOS release artifact and login autostart are phase 3
+   (see "Decided").
 
 ## Non-goals
 
@@ -65,6 +65,12 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
 - Two tray icons, or a launcher that spawns the old programs as separate processes.
 - Making the user pair twice.
 - Losing the old command-line path for headless/scripted setups.
+
+## Decided (user decisions, 2026-11-05)
+
+- The Finder "send" entry moves to phase 3's installer.
+- Mac notifications are text-only (no click action) until an app bundle exists.
+- The macOS release artifact and login autostart are phase 3.
 
 ## Calls made by Claude (not discussed with the user; check these)
 
@@ -81,6 +87,16 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
   autostart entries (systemd service, XDG/openbox autostart, Windows scheduled tasks,
   Send To shortcut), so the old programs can't hold ports 24850/24851 or show a second
   tray icon.
+  On Windows (user request, 2026-11-05; done by hand on the Boot Camp machine that day),
+  the phase 3 installer removes, in this order: run the old `synergy-audio.exe unmute` if
+  it exists; stop and unregister scheduled tasks `synergy-audio` and `synergy-dragndrop`
+  and kill those processes; delete `%LOCALAPPDATA%\synergy-audio`,
+  `%LOCALAPPDATA%\synergy-dragndrop`, `%APPDATA%\synergy-audio`, `%APPDATA%\synergy-dragndrop`
+  and `%APPDATA%\Microsoft\Windows\SendTo\Send to other PC.lnk`; remove firewall rule
+  `synergy-dragndrop (TCP 24851)` (needs admin).
+  Phase 3 fix wave (final review I2, Minor 1): after the two kills it runs the old `unmute`
+  again (a running old sender re-mutes) and waits up to 5 s for the old processes to exit;
+  the order above is otherwise unchanged (src/install.rs `windows()`).
 - **Linux autostart** = launch the tray at desktop login, which replaces the systemd
   receiver service. Headless audio stays possible through the command line
   (`audio receive`), documented but not installed by default; it must not run at the

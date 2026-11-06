@@ -10,20 +10,32 @@ pub fn received_text(n: usize, from: &str) -> String {
 }
 
 pub fn open_folder(dir: &Path) {
-    let opener = if cfg!(windows) { "explorer.exe" } else { "xdg-open" };
+    let opener = if cfg!(windows) {
+        "explorer.exe"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
         eprintln!("can't open {}: {e}", dir.display());
     }
 }
 
-/// Puts `text` on the clipboard via the OS tool (`xclip` on Linux, `clip` on Windows).
+/// Puts `text` on the clipboard via the OS tool (`xclip` on Linux, `clip` on Windows, `pbcopy` on macOS).
 pub fn copy(text: &str) {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let mut cmd = if cfg!(windows) { Command::new("clip") } else { Command::new("xclip") };
+    let mut cmd = Command::new(if cfg!(windows) {
+        "clip"
+    } else if cfg!(target_os = "macos") {
+        "pbcopy"
+    } else {
+        "xclip"
+    });
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000); // CREATE_NO_WINDOW: no console flash
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     cmd.args(["-selection", "clipboard"]);
     let r = cmd.stdin(Stdio::piped()).spawn().and_then(|mut c| {
         c.stdin.take().expect("piped").write_all(text.as_bytes())?;
@@ -90,9 +102,48 @@ fn toast(text: &str, _label: Option<&str>, click: Option<OnClick>) {
     }
 }
 
+/// osascript arguments; the text and title travel as argv, never inside the script (file names come from the remote partner).
+#[cfg(any(target_os = "macos", test))]
+fn osascript_args(title: &str, text: &str) -> Vec<String> {
+    let mut a: Vec<String> =
+        ["-e", "on run argv", "-e", "display notification (item 1 of argv) with title (item 2 of argv)", "-e", "end run"].map(String::from).into();
+    a.extend([text.to_string(), title.to_string()]);
+    a
+}
+
+/// Text only: osascript notifications have no click action.
+#[cfg(target_os = "macos")]
+fn toast(text: &str, _label: Option<&str>, _click: Option<OnClick>) {
+    match std::process::Command::new("osascript").args(osascript_args(TITLE, text)).spawn() {
+        Ok(mut c) => {
+            std::thread::spawn(move || {
+                if let Err(e) = c.wait() {
+                    eprintln!("notification failed: {e}");
+                }
+            });
+        }
+        Err(e) => eprintln!("notification failed: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osascript_args_keep_text_out_of_script() {
+        let text = r#"a" & (do shell script "touch /tmp/x") & ""#;
+        let a = osascript_args("synergy-tools", text);
+        assert_eq!(a.len(), 8);
+        assert_eq!(a[6], text);
+        assert_eq!(a[7], "synergy-tools");
+        for i in [0, 2, 4] {
+            assert_eq!(a[i], "-e");
+        }
+        for i in [1, 3, 5] {
+            assert!(!a[i].contains("do shell script"));
+        }
+    }
 
     #[test]
     fn received_text_plural() {

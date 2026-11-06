@@ -5,50 +5,47 @@ and mouse between computers but not audio or file drag-and-drop.
 
 | Tool | What it does | Platforms |
 |------|--------------|-----------|
-| [synergy-tools audio](docs/audio.md) | Streams one machine's audio to another over the LAN (e.g. Windows game audio to Linux headphones). Part of the `synergy-tools` program. | Windows sender → Linux receiver |
-| [synergy-tools files](docs/files.md) | Sends files between the two machines: drop window, right-click "Send to", tray. Part of the `synergy-tools` program at the repo root. | Windows ↔ Linux |
+| [audio](docs/audio.md) (`synergy-tools audio`) | Streams one machine's audio to another over the LAN (e.g. Windows game audio to Linux headphones). | Windows or macOS sender → Linux receiver |
+| [files](docs/files.md) (`synergy-tools`) | Sends files between the two machines: drop window, tray, `synergy-tools files send` (right-click "Send to other PC" in Thunar/Dolphin/Nautilus, Explorer and Finder via `synergy-tools install`). | Windows, macOS, Linux (any pair) |
 
-Both use one pairing (an 8-digit code, once), and their traffic is encrypted and
-authenticated. Usage steps are in each tool's doc.
+Run `synergy-tools` with no arguments for the tray (one icon for both tools; on macOS it sits in
+the menu bar, with no Dock icon). `synergy-tools install` copies it to a per-user place
+(`~/.local/bin`, `%LOCALAPPDATA%\Programs\synergy-tools`, the app bundle `~/Applications/synergy-tools.app` on macOS), starts it at login and adds the right-click entries ([docs/files.md](docs/files.md#install)). Its menu:
 
-### Pairing
+```
+Online: <names> | No partner online | Not paired
+─────
+Audio: streaming to <name> | receiving from <name> | waiting for partner | stopped | error: …
+Stop audio / Start audio
+Auto-mute speakers        (Windows only, a check mark)
+─────
+Hide drop window / Show drop window
+─────
+Pair…
+Quit
+```
 
-`synergy-tools` pairs with an 8-digit code (`synergy-tools pair` on one PC, `synergy-tools pair
-<host> <code>` on the other). Pairing again with another PC adds a partner, so one PC can have
-several; `synergy-tools partners` lists them. One code pairs audio and files. Details:
-[docs/files.md](docs/files.md#pairing).
+Dropped files go to the online partner (a picker when several are online). Audio streams by
+itself from Windows or macOS to the online Linux partner ([docs/audio.md](docs/audio.md#in-the-tray)).
 
-### Tray
+Both pair the two machines once with an 8-digit code, and their traffic is encrypted and
+authenticated. Usage: [docs/files.md](docs/files.md) and [docs/audio.md](docs/audio.md).
 
-The tray menu, top to bottom:
+## Pairing
 
-- status line (greyed out): `Not paired`, `No partner online` or `Online: <names>`; the app pings
-  its partners every 5 seconds
-- audio line (greyed out): `Audio: streaming to <name>` / `receiving from <name>`, `stopped`,
-  `waiting for partner` or `error: <message>`
-- `Stop audio` / `Start audio`: stops or starts the stream on both PCs (not saved)
-- `Auto-mute speakers` (Windows only, check mark, saved): mute the Windows speakers while Linux plays
-- `Hide drop window` / `Show drop window`
-- `Pair…`, `Quit` (Quit unmutes the speakers if the app muted them)
-
-Audio streams by itself when the app runs on both PCs: Linux receives, Windows sends to the first
-online Linux partner. Dropped files go to the online partner, with a menu to pick one when several
-are online. Details: [docs/audio.md](docs/audio.md#in-the-tray),
-[docs/files.md](docs/files.md#daily-use).
+One code pairs two PCs: run `synergy-tools pair` on one and `synergy-tools pair <host> <code>`
+on the other. The pairing covers audio and files alike. Pairing again with
+another PC adds a partner; `synergy-tools partners` lists them. Details: [docs/files.md](docs/files.md#pairing).
 
 ## Layout
 
-The `synergy-tools` program is the Rust crate at the repo root (`Cargo.toml`, `src/`), formerly
-`synergy-dragndrop`; the former `synergy-audio` crate is `src/audio.rs` (its README is
-`docs/audio.md`). Both keep their full history from the former standalone repos, imported with
-`git subtree add`. Commits from before the import touched paths at the old repo's root, so
-`git log --follow -- src/audio.rs` stops at the import; to see the older ones, follow the import
-merge (`git log --oneline 'HEAD^{/Add .synergy-audio/. from commit}^2'`).
+The repo root is the `synergy-tools` crate: file sending (formerly synergy-dragndrop) and
+audio (formerly synergy-audio), history kept via `git mv`.
 
 ```
-src/                    the synergy-tools program
-docs/                   docs (files.md, audio.md), design spec and plans, history/
-.github/workflows/      ci.yml
+src/                    the synergy-tools crate (audio.rs is the audio engine)
+docs/                   files.md, audio.md, history/, superpowers/ (specs, plans)
+.github/workflows/      ci.yml, release.yml
 ```
 
 ## Build
@@ -58,14 +55,23 @@ git clone https://github.com/ztancrell/synergy-tools.git
 cd synergy-tools && cargo test && cargo build --release
 ```
 
-Linux build dependencies (Debian/Ubuntu): `libgtk-3-dev libayatana-appindicator3-dev
-libasound2-dev` (Arch: `gtk3 libayatana-appindicator alsa-lib`). The Windows build is
-described in [docs/files.md](docs/files.md#build-from-source).
+Linux build dependencies: `libgtk-3-dev libayatana-appindicator3-dev libasound2-dev`
+(Arch `gtk3 libayatana-appindicator alsa-lib`). macOS needs `xcode-select --install` and rustup.
+Windows builds are described in each tool's docs.
 
 ## CI and releases
 
-`ci.yml` builds and tests `synergy-tools` on Ubuntu 22.04 and Windows for every push to `main`
-and every pull request.
+`ci.yml` tests and builds the crate on every push and pull request in three jobs: `linux`,
+`windows` and `macos`. Warnings fail CI (`RUSTFLAGS=-D warnings`). The `macos` job also uploads a
+universal binary (arm64 + x86_64); all three jobs upload their binary as a workflow artifact
+(`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64`, `synergy-tools-macos-universal`).
 
-Superseded: per-tool releases end here; phase 3 adds one release workflow. Old `audio-v*`
-releases stay on the Releases page.
+A release: bump `version` in `Cargo.toml`, commit, then `git tag v<version> && git push origin v<version>`.
+`.github/workflows/release.yml` builds with `ci.yml` and publishes the three assets
+(`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64.exe`, `synergy-tools-macos-universal`)
+to a GitHub Release; the tag must match the Cargo version. The binaries are unsigned: Mac users remove
+the quarantine flag (`xattr -d com.apple.quarantine synergy-tools-macos-universal`, see
+[files.md](docs/files.md#macos)); Windows users get SmartScreen (More info > Run anyway).
+
+Superseded: per-tool tags `audio-v*` / `dragndrop-v*` and their workflows; one `v*` tag now
+(`.github/workflows/release.yml`).

@@ -1,17 +1,16 @@
-//! Audio: stream system audio from one machine to another over UDP, encrypted.
+//! synergy-tools audio: stream system audio from one machine to another over UDP, encrypted.
 //!
-//! Peers are the partners from `synergy-tools pair` (`config::load_partners`): each has a
-//! 32-byte secret and the 8-byte partner id derived from it.
-//! Session: Noise NNpsk0 with that secret as PSK. `HELLO` + partner id + Noise message 1
+//! Pairing is shared with file transfer (`synergy-tools pair`, see `pair.rs`): it gives both
+//! sides a partner with a 32-byte secret and an 8-byte id, used here as peer id and PSK.
+//! Session: Noise NNpsk0 with that secret as PSK. `HELLO` + peer id + Noise message 1
 //! (sender), `HELLO_REPLY` + message 2 (receiver). After that every datagram, both ways, is
 //! [b'D'][nonce: u64 LE][ChaChaPoly(payload) + 16-byte tag]:
 //! audio (sender -> receiver, nonce = seq, payload = 240 stereo i16 LE frames = 5 ms at
 //! 48 kHz, 985 B in all), keepalive (sender -> receiver every 500 ms, nonce with `KA_BIT` set)
 //! and ack (receiver -> sender in reply, its own nonce counter). Keepalive and ack payload is
-//! the 9-byte stop control `Ctl` ([stopped 0/1][epoch u64 LE]), any other length is rejected.
-//! Each side merges the other's `Ctl` into its own (last writer wins: higher epoch, a tie goes
-//! to stopped) and answers with its own; Start/Stop on either side bumps the epoch. While
-//! stopped the sender drops captured audio and the receiver discards what arrives.
+//! the 9-byte stop control `Ctl` ([stopped 0/1][epoch u64 LE]): each side merges the other's
+//! (newer epoch wins, a tie goes to stopped) and answers with its own. While stopped the sender
+//! drops captured audio, the receiver discards what arrives, and nothing is muted.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
@@ -19,26 +18,28 @@ use snow::{HandshakeState, StatelessTransportState};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
+use crate::config;
 use std::net::{SocketAddr, UdpSocket};
-use crate::config::Partner;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub const PORT: u16 = 24850;
-/// Role by platform: Linux receives, every other OS sends.
-pub const RECEIVER: bool = cfg!(target_os = "linux");
 const RATE: u32 = 48_000;
 const FRAMES_PER_PACKET: usize = 240; // 5 ms at 48 kHz
 const SAMPLES_PER_PACKET: usize = FRAMES_PER_PACKET * 2; // stereo
 const SAMPLES_PER_MS: usize = RATE as usize / 1000 * 2;
 pub const DEFAULT_BUFFER_MS: usize = 20;
 const STATS_EVERY: Duration = Duration::from_secs(5);
+const TICK: Duration = Duration::from_millis(100); // how often loops check `quit`
+const RELOAD_EVERY: Duration = Duration::from_secs(1); // unknown peer id: reload peers at most this often
+const REVOKE_EVERY: Duration = Duration::from_secs(5); // reload peers so an unpaired sender's session ends
 const SEND_QUEUE: usize = 20; // packets between capture callback and sender thread (~100 ms)
 const LOG_MAX: u64 = 1 << 20; // --log file is emptied when it grows past 1 MiB
 const RETRY_EVERY: Duration = Duration::from_secs(10);
+const BIND_RETRY_EVERY: Duration = Duration::from_secs(5);
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(500);
 const ACK_FRESH: Duration = Duration::from_millis(1500); // newer ack = receiver is playing us
 const REHANDSHAKE: Duration = Duration::from_secs(3); // no ack for this long: new handshake
@@ -46,8 +47,6 @@ const NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
 const HELLO: &[u8] = b"SAh1";
 const HELLO_REPLY: &[u8] = b"SAh2";
 const KA_BIT: u64 = 1 << 63; // keepalive nonces; audio seqs never get that high
-const RELOAD_EVERY: Duration = Duration::from_secs(1); // receiver: re-read pairings on an unknown id
-const TICK: Duration = Duration::from_millis(100); // how often loops check `quit`
 
 /// Status line to the --log file if one is open, else stderr (see `say_line`).
 macro_rules! say {
@@ -90,95 +89,176 @@ fn open_log(path: &str) -> Result<File, String> {
     Ok(f)
 }
 
-/// Unattended sender: log to a file, keep retrying.
-pub fn send_logged(target: &str, path: &str) -> Result<(), String> {
+/// Unattended sender (autostart): log to a file, no console window, keep retrying.
+pub fn run_send_logged(target: &str, path: &str) -> Result<(), String> {
     LOG.set(Mutex::new(open_log(path)?)).unwrap();
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     say!("--- synergy-tools audio send started (unix time {secs}) ---");
     // At login the audio device or network may not be ready yet; Task Scheduler does not
     // restart a task whose process exits with an error, so retry here instead.
     loop {
-        if let Err(e) = send_to(target) {
+        if let Err(e) = run_send(target) {
             say!("error: {e} (retrying in {}s)", RETRY_EVERY.as_secs());
         }
         std::thread::sleep(RETRY_EVERY);
     }
 }
 
+// ---------- stop control and shared state ----------
+
+/// Stop control, carried by every keepalive and ack. Last writer wins by `epoch`.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Ctl {
+    pub stopped: bool,
+    pub epoch: u64,
+}
+
+impl Ctl {
+    /// [stopped as u8][epoch u64 LE]
+    pub fn encode(self) -> [u8; 9] {
+        let mut b = [0; 9];
+        b[0] = self.stopped as u8;
+        b[1..].copy_from_slice(&self.epoch.to_le_bytes());
+        b
+    }
+
+    /// Exactly 9 bytes, first byte 0 or 1.
+    pub fn decode(b: &[u8]) -> Option<Ctl> {
+        let b: &[u8; 9] = b.try_into().ok()?;
+        (b[0] <= 1).then(|| Ctl { stopped: b[0] == 1, epoch: u64::from_le_bytes(b[1..].try_into().unwrap()) })
+    }
+
+    /// Adopt `remote` if it is newer, or the same epoch and stopped while we are not.
+    /// True if that changed anything.
+    pub fn merge(&mut self, remote: Ctl) -> bool {
+        let take = remote.epoch > self.epoch || (remote.epoch == self.epoch && remote.stopped && !self.stopped);
+        if take {
+            *self = remote;
+        }
+        take
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status {
+    Waiting,
+    Streaming([u8; 8]), // partner's peer id
+    Stopped,
+    Error(String),
+}
+
+/// State shared between the engine (`send`/`receive`) and whoever drives it.
+pub struct Shared {
+    pub ctl: Mutex<Ctl>,
+    pub auto_mute: AtomicBool, // Windows sender: mute the speakers while streaming
+    pub status: Mutex<Status>,
+}
+
+impl Shared {
+    pub fn new(auto_mute: bool) -> Arc<Shared> {
+        Arc::new(Shared { ctl: Mutex::default(), auto_mute: AtomicBool::new(auto_mute), status: Mutex::new(Status::Waiting) })
+    }
+
+    pub fn set_stopped(&self, on: bool) {
+        let mut c = self.ctl.lock().unwrap();
+        c.stopped = on;
+        c.epoch = c.epoch.saturating_add(1);
+    }
+}
+
 // ---------- tray ----------
 
-/// The sender's target: the first online partner running Linux.
-pub fn pick_target(online: &[Partner]) -> Option<&Partner> {
+/// The tray's audio role by platform: Linux plays, Windows and macOS stream.
+pub const RECEIVER: bool = cfg!(target_os = "linux");
+
+/// The sender streams to the first online Linux partner.
+pub fn pick_target(online: &[config::Partner]) -> Option<&config::Partner> {
     online.iter().find(|p| p.os == "linux")
 }
 
-/// Sleep `d` in ticks; false if `quit` was set meanwhile.
+fn set_status(sh: &Shared, st: Status) {
+    *sh.status.lock().unwrap() = st;
+}
+
+/// Sleep `d` in `TICK` steps; false if `quit` was set meanwhile.
 fn wait(d: Duration, quit: &AtomicBool) -> bool {
-    let until = Instant::now() + d;
-    while Instant::now() < until && !quit.load(Relaxed) {
+    let end = Instant::now() + d;
+    while Instant::now() < end {
+        if quit.load(Relaxed) {
+            return false;
+        }
         std::thread::sleep(TICK);
     }
     !quit.load(Relaxed)
 }
 
-/// Audio for the tray, on its own threads; errors go to `sh.status`, never back to the tray.
-/// Receiver (Linux): bind once (busy port: error, no audio), then play, retrying every 10 s.
-/// Sender: follow `pick_target(online)` once a second, restarting `send` when it changes.
-/// Setting `quit` ends it; the returned thread finishes once `send` has unmuted.
-pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<Partner>>>, quit: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
-    let set = |sh: &Shared, st: Status| *sh.status.lock().unwrap() = st;
-    if RECEIVER {
-        return std::thread::spawn(move || {
-            let sock = match bind_receiver(PORT) {
-                Ok(s) => s,
-                Err(e) => return set(&sh, Status::Error(e)),
-            };
-            loop {
-                let r = sock.try_clone().map_err(|e| e.to_string());
-                if let Err(e) = r.and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), quit.clone())) {
-                    set(&sh, Status::Error(e));
-                }
-                if !wait(RETRY_EVERY, &quit) {
-                    return;
-                }
-            }
-        });
+/// Bind `port`, retrying every `every` while it fails (e.g. busy because an old receiver is still
+/// stopping); each failure sets `Status::Error`. None if `quit` was set meanwhile.
+fn bind_retrying(port: u16, every: Duration, sh: &Shared, quit: &AtomicBool) -> Option<UdpSocket> {
+    loop {
+        match bind_receiver(port) {
+            Ok(s) => return Some(s),
+            Err(e) => set_status(sh, Status::Error(e)),
+        }
+        if !wait(every, quit) {
+            return None;
+        }
     }
+}
+
+/// Run audio for the tray on background threads and return at once. Receiver: bind UDP `PORT`
+/// (retrying every 5 s while it is busy, with `Status::Error` showing why) and play, retrying
+/// device errors every 10 s.
+/// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes.
+// ponytail: these threads have no panic guard; a panic freezes the audio line on its last
+// status. Wrap the bodies in catch_unwind and set Status::Error if that ever happens.
+pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
     std::thread::spawn(move || {
-        let mut cur: Option<([u8; 8], Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
-        while wait(Duration::from_secs(1), &quit) {
+        if RECEIVER {
+            // Never set: the thread is detached and ends with the process on Quit.
+            let never = Arc::new(AtomicBool::new(false));
+            let Some(sock) = bind_retrying(PORT, BIND_RETRY_EVERY, &sh, &never) else { return };
+            loop {
+                let r = sock.try_clone().map_err(|e| e.to_string()).and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), never.clone()));
+                if let Err(e) = r {
+                    set_status(&sh, Status::Error(e));
+                }
+                std::thread::sleep(RETRY_EVERY);
+            }
+        }
+        // (target id, its quit flag, its thread)
+        let mut running: Option<([u8; 8], Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
+        loop {
             let want = pick_target(&online.lock().unwrap_or_else(|e| e.into_inner())).cloned();
-            if cur.as_ref().map(|c| c.0) != want.as_ref().map(|p| p.id) {
-                if let Some((_, quit, h)) = cur.take() {
+            if want.as_ref().map(|p| p.id) != running.as_ref().map(|r| r.0) {
+                if let Some((_, quit, t)) = running.take() {
                     quit.store(true, Relaxed);
-                    let _ = h.join(); // `send` unmutes on the way out
+                    let _ = t.join(); // within about 1 s; unmutes if it muted
                 }
                 match want {
-                    None => set(&sh, Status::Waiting),
+                    None => set_status(&sh, Status::Waiting),
                     Some(p) => {
-                        let (sh, quit) = (sh.clone(), Arc::new(AtomicBool::new(false)));
+                        let (quit, sh) = (Arc::new(AtomicBool::new(false)), sh.clone());
                         let q = quit.clone();
-                        let h = std::thread::spawn(move || loop {
-                            let r = crate::config::resolve(&p.host, PORT)
-                                .and_then(|a| send(a, p.id, p.secret, sh.clone(), q.clone()));
-                            match r {
-                                Ok(()) => return, // quit
-                                Err(e) => set(&sh, Status::Error(e)),
+                        let t = std::thread::spawn(move || loop {
+                            let r = config::resolve(split_port(&p.host).0, PORT).and_then(|a| send(a, p.id, p.secret, sh.clone(), q.clone()));
+                            if q.load(Relaxed) {
+                                return;
+                            }
+                            if let Err(e) = r {
+                                set_status(&sh, Status::Error(e));
                             }
                             if !wait(RETRY_EVERY, &q) {
                                 return;
                             }
                         });
-                        cur = Some((p.id, quit, h));
+                        running = Some((p.id, quit, t));
                     }
                 }
             }
+            std::thread::sleep(Duration::from_secs(1));
         }
-        if let Some((_, q, h)) = cur {
-            q.store(true, Relaxed);
-            let _ = h.join(); // `send` unmutes on the way out
-        }
-    })
+    });
 }
 
 // ---------- packet ----------
@@ -236,70 +316,6 @@ fn finish_hello(mut hs: HandshakeState, reply: &[u8]) -> Option<StatelessTranspo
     hs.into_stateless_transport_mode().ok()
 }
 
-/// Stop control, a last-writer-wins register carried in every keepalive and ack.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct Ctl {
-    pub stopped: bool,
-    pub epoch: u64,
-}
-
-impl Ctl {
-    /// [stopped as u8][epoch u64 LE]
-    pub fn encode(self) -> [u8; 9] {
-        let mut b = [0; 9];
-        b[0] = self.stopped as u8;
-        b[1..].copy_from_slice(&self.epoch.to_le_bytes());
-        b
-    }
-
-    /// Exactly 9 bytes, first byte 0 or 1.
-    pub fn decode(b: &[u8]) -> Option<Ctl> {
-        let b: &[u8; 9] = b.try_into().ok()?;
-        let stopped = match b[0] {
-            0 => false,
-            1 => true,
-            _ => return None,
-        };
-        Some(Ctl { stopped, epoch: u64::from_le_bytes(b[1..].try_into().unwrap()) })
-    }
-
-    /// Adopt `remote` if its epoch is higher, or equal and it says stopped. True if changed.
-    pub fn merge(&mut self, remote: Ctl) -> bool {
-        let newer = remote.epoch > self.epoch || (remote.epoch == self.epoch && remote.stopped && !self.stopped);
-        if newer {
-            *self = remote;
-        }
-        newer
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Status {
-    Waiting,
-    Streaming([u8; 8]), // partner id
-    Stopped,
-    Error(String),
-}
-
-/// State shared between the engine (`send`/`receive`) and whoever controls it.
-pub struct Shared {
-    pub ctl: Mutex<Ctl>,
-    pub auto_mute: AtomicBool,
-    pub status: Mutex<Status>,
-}
-
-impl Shared {
-    pub fn new(auto_mute: bool) -> Arc<Shared> {
-        Arc::new(Shared { ctl: Mutex::default(), auto_mute: AtomicBool::new(auto_mute), status: Mutex::new(Status::Waiting) })
-    }
-
-    /// Start (false) or Stop (true) from this side; the new epoch wins over the other side's.
-    pub fn set_stopped(&self, on: bool) {
-        let mut c = self.ctl.lock().unwrap();
-        *c = Ctl { stopped: on, epoch: c.epoch + 1 };
-    }
-}
-
 /// One sender's session on the receiver.
 struct Sess {
     t: StatelessTransportState,
@@ -315,30 +331,49 @@ enum In {
     Send(Vec<u8>), // hello reply or ack, back to where the datagram came from
     Audio(Vec<i16>),
     Late,     // authentic but late, duplicate or replayed
-    Stopped,  // authentic audio, discarded while stopped
+    Stopped,  // authentic audio while stopped: discarded
     Rejected, // unknown peer, bad MAC, malformed
 }
-
-type LoadPeers = fn() -> Result<HashMap<[u8; 8], [u8; 32]>, String>;
 
 /// Receiver session state. A new handshake goes into `next` and replaces `cur` only once a
 /// packet authenticates under it, so a replayed old hello can't break a running stream.
 struct Rx {
     peers: HashMap<[u8; 8], [u8; 32]>,
+    load_peers: LoadPeers,
+    reloaded: Option<Instant>, // last time an unknown peer id made us call `load_peers`
     cur: Option<Sess>,
     next: Option<Sess>,
     promoted: u64, // sessions started, for the log line
-    load_peers: LoadPeers, // called again when a hello has an unknown id (newly paired sender)
-    loaded: Option<Instant>, // last such reload, at most one per RELOAD_EVERY
 }
 
+type LoadPeers = fn() -> Result<HashMap<[u8; 8], [u8; 32]>, String>;
+
 impl Rx {
-    /// One datagram; keepalives merge the sender's `Ctl` into `ctl` and get it back in the ack.
+    fn new(load_peers: LoadPeers) -> Rx {
+        Rx { peers: HashMap::new(), load_peers, reloaded: None, cur: None, next: None, promoted: 0 }
+    }
+
+    /// Reload the partner list and drop sessions of senders no longer in it (unpaired).
+    /// A failed load keeps the old list.
+    fn reload(&mut self) {
+        if let Ok(p) = (self.load_peers)() {
+            self.peers = p;
+        }
+        let peers = &self.peers;
+        for s in [&mut self.cur, &mut self.next] {
+            if s.as_ref().is_some_and(|x| !peers.contains_key(&x.peer)) {
+                *s = None;
+            }
+        }
+    }
+
+    /// One datagram. Keepalives merge the sender's `Ctl` into `ctl`; acks carry ours.
     fn handle(&mut self, buf: &[u8], ctl: &mut Ctl) -> In {
         if let Some(rest) = buf.strip_prefix(HELLO) {
             let Some((peer, msg)) = rest.split_first_chunk::<8>() else { return In::Rejected };
-            if !self.peers.contains_key(peer) && self.loaded.is_none_or(|t| t.elapsed() >= RELOAD_EVERY) {
-                self.loaded = Some(Instant::now());
+            // A sender paired since we loaded: reload, at most once per second (hellos are cheap to fake).
+            if !self.peers.contains_key(peer) && self.reloaded.is_none_or(|t| t.elapsed() >= RELOAD_EVERY) {
+                self.reloaded = Some(Instant::now());
                 if let Ok(p) = (self.load_peers)() {
                     self.peers = p;
                 }
@@ -365,14 +400,12 @@ impl Rx {
         };
         let s = self.cur.as_mut().unwrap();
         if nonce & KA_BIT != 0 {
-            let Some(remote) = Ctl::decode(&payload) else { return In::Rejected };
             if !accept(s.last_ka, nonce) {
                 return In::Late;
             }
+            let Some(remote) = Ctl::decode(&payload) else { return In::Rejected };
             s.last_ka = Some(nonce);
-            if ctl.merge(remote) {
-                eprintln!("receive: {} by the sender", if ctl.stopped { "stopped" } else { "started" });
-            }
+            ctl.merge(remote);
             s.acks += 1;
             return In::Send(seal(&s.t, s.acks - 1, &ctl.encode()));
         }
@@ -407,14 +440,16 @@ fn config_48k(device: &cpal::Device) -> Result<SupportedStreamConfig, String> {
         .map_err(|e| e.to_string())?
         .filter(|c| c.sample_format() == def.sample_format())
         .find_map(|c| c.try_with_sample_rate(RATE))
-        .ok_or_else(|| {
-            format!(
-                "device '{device}' runs at {} Hz and can't do {RATE} Hz. \
-                 Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
-                 macOS: Audio MIDI Setup; Linux/PipeWire: default.clock.rate = 48000) and retry.",
-                def.sample_rate()
-            )
-        })
+        .ok_or_else(|| rate_error(&device.to_string(), def.sample_rate()))
+}
+
+fn rate_error(device: &str, rate: u32) -> String {
+    format!(
+        "device '{device}' runs at {rate} Hz and can't do {RATE} Hz. \
+         Set it to 48000 Hz (Windows: Sound settings > device Properties > Advanced; \
+         macOS: Audio MIDI Setup > the output device > Format; \
+         Linux/PipeWire: default.clock.rate = 48000) and retry."
+    )
 }
 
 fn default_output() -> Result<cpal::Device, String> {
@@ -423,18 +458,49 @@ fn default_output() -> Result<cpal::Device, String> {
 
 // ---------- send ----------
 
-/// CLI `audio send`: the partner at `target` ("host[:port]", by name or host), auto-mute on,
-/// runs until killed.
-pub fn send_to(target: &str) -> Result<(), String> {
-    let ps = crate::config::load_partners()?;
-    let p = crate::config::find(&ps, target.rsplit_once(':').map_or(target, |(h, _)| h))?;
-    let addr = crate::config::resolve(target, PORT)?;
-    say!("send: to {} ({addr})", p.name);
+/// Paired PCs as peer id -> secret, for the receiver. Errors if there are none.
+pub fn peers() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+    peers_from(&config::config_dir()?)
+}
+
+fn peers_from(dir: &Path) -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+    let ps = config::load_partners_from(dir)?;
+    if ps.is_empty() {
+        return Err("not paired yet: run `synergy-tools pair` on one machine, then `synergy-tools pair <host> <code>` on the other".into());
+    }
+    Ok(ps.into_iter().map(|p| (p.id, p.secret)).collect())
+}
+
+pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
+    UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
+        format!(
+            "can't bind UDP {port}: {e}. Is another synergy-tools or the old synergy-audio receiver running? \
+             Stop it (old one: systemctl --user disable --now synergy-audio)"
+        )
+    })
+}
+
+/// "host" or "host:port" (port digits, exactly one ':') to (host, port); anything else is all host.
+fn split_port(t: &str) -> (&str, Option<u16>) {
+    match t.split_once(':') {
+        Some((h, p)) if !p.contains(':') && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => (h, p.parse().ok()),
+        _ => (t, None),
+    }
+}
+
+/// CLI `audio send`: `target` is a partner name, `name/os` or host, optionally with `:port`.
+/// Connects to the partner's stored host (its address may carry a files port, which is ignored).
+pub fn run_send(target: &str) -> Result<(), String> {
+    let partners = config::load_partners()?;
+    let (key, port) = split_port(target);
+    let p = config::find(&partners, key)?;
+    let addr = config::resolve(split_port(&p.host).0, port.unwrap_or(PORT))?;
+    say!("send: paired with {}", p.name);
     send(addr, p.id, p.secret, Shared::new(true), Arc::new(AtomicBool::new(false)))
 }
 
-/// Capture the default output and stream it to `addr` until `quit` is set; then stop the
-/// capture, end the threads and unmute if we muted.
+/// Capture the default output device and stream it to `addr` until `quit` is set; then stop
+/// the stream and threads, unmute if we muted, and return `Ok(())` (within about 1 s).
 pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, quit: Arc<AtomicBool>) -> Result<(), String> {
     let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
     sock.connect(addr).map_err(|e| e.to_string())?;
@@ -446,10 +512,7 @@ pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, qui
     let device = default_output()?;
     let sup = config_48k(&device)?;
     let config: StreamConfig = sup.config();
-    say!(
-        "send: capturing '{device}' ({} ch, {:?}, {} Hz) -> {addr}",
-        config.channels, sup.sample_format(), config.sample_rate
-    );
+    say!("send: capturing '{device}' ({} ch, {:?}, {} Hz) -> {addr}", config.channels, sup.sample_format(), config.sample_rate);
     if config.channels > 2 {
         say!("warning: {} channels, sending only the first two (front L/R)", config.channels);
     }
@@ -462,11 +525,16 @@ pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, qui
     let sent = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(AtomicU64::new(0));
     let dropped = Arc::new(AtomicU64::new(0));
-    // Ends when the capture stream (holding `tx`) is dropped.
     let sender = {
-        let (sent, errors, session, sh) = (sent.clone(), errors.clone(), session.clone(), sh.clone());
+        let (sent, errors, session, sh, quit) = (sent.clone(), errors.clone(), session.clone(), sh.clone(), quit.clone());
         std::thread::spawn(move || {
-            for (seq, pcm) in rx {
+            // Ends when the capture stream (and with it `tx`) is gone, or on quit.
+            while !quit.load(Relaxed) {
+                let (seq, pcm) = match rx.recv_timeout(TICK) {
+                    Ok(p) => p,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
                 if sh.ctl.lock().unwrap().stopped {
                     continue;
                 }
@@ -487,14 +555,15 @@ pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, qui
     }?;
     stream.play().map_err(|e| e.to_string())?;
 
-    // Spawned last: nothing below returns early, so send_logged's retries never stack threads.
+    // Spawned last: nothing below returns early, so run_send_logged's retries never stack threads.
     let link = Arc::new(Mutex::new(Link { last_ack: None, mute: String::new(), rejected: 0 }));
     let ka = {
         let (link, quit) = (link.clone(), quit.clone());
         std::thread::spawn(move || keepalive(ka_sock, link, session, peer, psk, sh, quit))
     };
 
-    let (mut prev, mut next_stats) = (0, Instant::now() + STATS_EVERY);
+    let mut prev = 0;
+    let mut next_stats = Instant::now() + STATS_EVERY;
     while !quit.load(Relaxed) {
         std::thread::sleep(TICK);
         if Instant::now() < next_stats {
@@ -520,8 +589,8 @@ pub fn send(addr: SocketAddr, peer: [u8; 8], psk: [u8; 32], sh: Arc<Shared>, qui
         prev = n;
     }
     drop(stream);
+    let _ = ka.join(); // unmutes if it muted
     let _ = sender.join();
-    let _ = ka.join(); // it unmutes on the way out
     Ok(())
 }
 
@@ -532,10 +601,10 @@ struct Link {
     rejected: u64, // datagrams that failed to authenticate, or replays
 }
 
-/// Every 500 ms until `quit`: (re)start the handshake if needed, send a keepalive with our
-/// `Ctl`, collect acks (merging the receiver's `Ctl`), then mute/unmute the speakers and set
-/// the status. Runs whether or not audio is playing (loopback capture sends nothing during
-/// silence). Unmutes on the way out if it muted.
+/// Every 500 ms: (re)start the handshake if needed, send a keepalive carrying our `Ctl`,
+/// collect acks (merging the receiver's `Ctl`), then update the status and mute/unmute the
+/// speakers. Runs whether or not audio is playing (loopback capture sends nothing during
+/// silence). On `quit`: unmutes if it muted, and returns.
 fn keepalive(
     sock: UdpSocket,
     link: Arc<Mutex<Link>>,
@@ -546,7 +615,6 @@ fn keepalive(
     quit: Arc<AtomicBool>,
 ) {
     mute::restore(); // a previous run that was killed may have left the speakers muted
-    mute::on_ctrl_c_restore();
     let mut muted_by_us = false;
     let mut buf = [0u8; 2048];
     let (mut pending, mut heard, mut last_ack_n, mut ka_n) = (None, None::<Instant>, None, 0u64);
@@ -559,7 +627,8 @@ fn keepalive(
             let _ = sock.send(&msg);
         }
         if let Some(t) = &*session.lock().unwrap() {
-            let _ = sock.send(&seal(t, KA_BIT | ka_n, &sh.ctl.lock().unwrap().encode()));
+            let ctl = *sh.ctl.lock().unwrap();
+            let _ = sock.send(&seal(t, KA_BIT | ka_n, &ctl.encode()));
             ka_n += 1;
         }
         let deadline = Instant::now() + KEEPALIVE_EVERY;
@@ -590,10 +659,7 @@ fn keepalive(
                             last_ack_n = Some(n);
                             heard = Some(Instant::now());
                             l.last_ack = heard;
-                            let mut ctl = sh.ctl.lock().unwrap();
-                            if ctl.merge(remote) {
-                                say!("send: {} by the receiver", if ctl.stopped { "stopped" } else { "started" });
-                            }
+                            sh.ctl.lock().unwrap().merge(remote);
                         }
                         _ => l.rejected += 1,
                     }
@@ -604,15 +670,15 @@ fn keepalive(
         }
         let fresh = link.lock().unwrap().last_ack.is_some_and(|t| t.elapsed() < ACK_FRESH);
         let stopped = sh.ctl.lock().unwrap().stopped;
-        let state = mute::update(fresh && !stopped && sh.auto_mute.load(Relaxed), &mut muted_by_us);
-        link.lock().unwrap().mute = state;
         *sh.status.lock().unwrap() = match (stopped, fresh) {
             (true, _) => Status::Stopped,
             (false, true) => Status::Streaming(peer),
             (false, false) => Status::Waiting,
         };
+        let state = mute::update(fresh && !stopped && sh.auto_mute.load(Relaxed), &mut muted_by_us);
+        link.lock().unwrap().mute = state;
     }
-    mute::update(false, &mut muted_by_us);
+    mute::update(false, &mut muted_by_us); // unmute if we muted
 }
 
 #[derive(Debug, PartialEq)]
@@ -622,8 +688,8 @@ enum MuteAction {
     Nothing,
 }
 
-/// Mute while we `want` it (ack fresh, not stopped, auto-mute on), unmute when we stop
-/// wanting it, and never touch a mute we didn't set.
+/// Mute while we `want` it (receiver acks, not stopped, auto-mute on), unmute when we no
+/// longer do, and never touch a mute we didn't set.
 fn mute_action(want: bool, muted: bool, muted_by_us: bool) -> MuteAction {
     match (want, muted, muted_by_us) {
         (true, false, _) => MuteAction::Mute,
@@ -787,44 +853,24 @@ struct Jitter {
     underruns: u64,
 }
 
-/// Partner id -> secret for every partner in the list (the receiver's `LoadPeers`).
-pub fn peers() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
-    peers_from(&crate::config::config_dir()?)
+/// CLI `audio receive`: needs at least one partner, binds UDP `PORT`, runs until killed.
+pub fn run_receive(buffer_ms: usize) -> Result<(), String> {
+    peers()?;
+    receive(bind_receiver(PORT)?, buffer_ms, peers, Shared::new(true), Arc::new(AtomicBool::new(false)))
 }
 
-fn peers_from(dir: &Path) -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
-    let ps = crate::config::load_partners_from(dir)?;
-    if ps.is_empty() {
-        return Err(crate::config::NOT_PAIRED.into());
-    }
-    Ok(ps.iter().map(|p| (p.id, p.secret)).collect())
-}
-
-/// The receiver's UDP socket, or an error that names what probably holds the port.
-pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
-    UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
-        format!(
-            "UDP {port} busy: quit old synergy-audio / other synergy-tools ({e}). \
-             Old one: systemctl --user disable --now synergy-audio"
-        )
-    })
-}
-
-/// Play what paired senders stream to `sock` until `quit` is set.
-pub fn receive(
-    sock: UdpSocket,
-    buffer_ms: usize,
-    load_peers: LoadPeers,
-    sh: Arc<Shared>,
-    quit: Arc<AtomicBool>,
-) -> Result<(), String> {
+/// Play what paired senders stream to `sock` until `quit` is set; returns within about 1 s.
+/// `load_peers` is called at start, again (at most once a second) for an unknown peer id, and
+/// every 5 s so an unpaired sender's session ends.
+pub fn receive(sock: UdpSocket, buffer_ms: usize, load_peers: LoadPeers, sh: Arc<Shared>, quit: Arc<AtomicBool>) -> Result<(), String> {
     let target = buffer_ms * SAMPLES_PER_MS;
     // Above this the sender clock is running ahead (or a burst arrived): drop back to target.
     let max = target + target.max(10 * SAMPLES_PER_MS);
 
-    let mut rx = Rx { peers: load_peers()?, cur: None, next: None, promoted: 0, load_peers, loaded: None };
+    let mut rx = Rx::new(load_peers);
+    // An unreadable config shows as an error (not an endless wait); a later pairing still loads.
+    let load_err = load_peers().map(|p| rx.peers = p).err();
     sock.set_read_timeout(Some(TICK)).map_err(|e| e.to_string())?;
-    let local = sock.local_addr().map_err(|e| e.to_string())?;
 
     let device = default_output()?;
     let sup = config_48k(&device)?;
@@ -833,6 +879,7 @@ pub fn receive(
     if let cpal::SupportedBufferSize::Range { min, max } = *sup.buffer_size() {
         config.buffer_size = cpal::BufferSize::Fixed((FRAMES_PER_PACKET as u32).clamp(min, max));
     }
+    let local = sock.local_addr().map_err(|e| e.to_string())?;
     eprintln!(
         "receive: UDP {local} -> '{device}' ({} ch, {:?}, {} Hz, device buffer {:?}), jitter buffer {buffer_ms} ms, {} paired sender(s)",
         config.channels, sup.sample_format(), config.sample_rate, config.buffer_size, rx.peers.len()
@@ -851,12 +898,17 @@ pub fn receive(
     let mut buf = [0u8; 2048];
     let (mut pkts, mut late, mut rejected, mut trimmed) = (0u64, 0u64, 0u64, 0u64);
     let mut next_stats = Instant::now() + STATS_EVERY;
-    let mut last_audio: Option<Instant> = None;
+    let mut last_audio: Option<Instant> = None; // last authentic audio packet, for the status
+    let mut next_revoke = Instant::now() + REVOKE_EVERY;
     while !quit.load(Relaxed) {
+        if Instant::now() >= next_revoke {
+            rx.reload();
+            next_revoke = Instant::now() + REVOKE_EVERY;
+        }
         if let Ok((n, from)) = sock.recv_from(&mut buf) {
             let sessions = rx.promoted;
-            let r = rx.handle(&buf[..n], &mut sh.ctl.lock().unwrap());
-            match r {
+            let got = rx.handle(&buf[..n], &mut sh.ctl.lock().unwrap());
+            match got {
                 In::Send(reply) => {
                     let _ = sock.send_to(&reply, from); // hello reply, or ack (the sender mutes its speakers)
                 }
@@ -864,8 +916,8 @@ pub fn receive(
                 In::Rejected => rejected += 1,
                 In::Stopped => {}
                 In::Audio(samples) => {
-                    pkts += 1;
                     last_audio = Some(Instant::now());
+                    pkts += 1;
                     let mut j = jb.lock().unwrap();
                     j.buf.extend(samples);
                     if j.buf.len() > max {
@@ -881,12 +933,11 @@ pub fn receive(
         }
         let stopped = sh.ctl.lock().unwrap().stopped;
         if stopped {
-            let mut j = jb.lock().unwrap();
-            j.buf.clear();
-            j.priming = true;
+            jb.lock().unwrap().buf.clear();
         }
-        let fresh = last_audio.is_some_and(|t| t.elapsed() < ACK_FRESH);
-        *sh.status.lock().unwrap() = match (stopped, fresh, &rx.cur) {
+        let streaming = last_audio.is_some_and(|t| t.elapsed() < ACK_FRESH);
+        *sh.status.lock().unwrap() = match (stopped, streaming, &rx.cur) {
+            _ if rx.peers.is_empty() && load_err.is_some() => Status::Error(load_err.clone().unwrap()),
             (true, _, _) => Status::Stopped,
             (false, true, Some(s)) => Status::Streaming(s.peer),
             _ => Status::Waiting,
@@ -904,7 +955,7 @@ pub fn receive(
             next_stats += STATS_EVERY;
         }
     }
-    Ok(()) // dropping `stream` stops playback
+    Ok(())
 }
 
 fn build_playback<T>(
@@ -957,6 +1008,48 @@ where
 mod tests {
     use super::*;
 
+    fn partner(name: &str, os: &str, id: u8) -> config::Partner {
+        config::Partner { id: [id; 8], host: "h".into(), secret: [id; 32], os: os.into(), name: name.into() }
+    }
+
+    #[test]
+    fn rate_error_names_each_os() {
+        let e = rate_error("Speakers", 44100);
+        for k in ["44100", "Audio MIDI Setup", "Sound settings", "default.clock.rate"] {
+            assert!(e.contains(k), "{e}");
+        }
+    }
+
+    #[test]
+    fn target_is_first_online_linux_partner() {
+        let ps = [partner("W", "windows", 1), partner("A", "linux", 2), partner("B", "linux", 3)];
+        assert_eq!(pick_target(&ps).map(|p| p.name.as_str()), Some("A"));
+        assert!(pick_target(&ps[..1]).is_none());
+    }
+
+    #[test]
+    fn receiver_bind_busy_message() {
+        let held = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let e = bind_receiver(port).unwrap_err();
+        assert!(e.contains("synergy-audio"), "{e}");
+    }
+
+    #[test]
+    fn receiver_bind_retries_until_free() {
+        let held = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let sh = Shared::new(true);
+        let t = {
+            let sh = sh.clone();
+            std::thread::spawn(move || bind_retrying(port, Duration::from_millis(50), &sh, &AtomicBool::new(false)))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(matches!(*sh.status.lock().unwrap(), Status::Error(_)));
+        drop(held);
+        assert!(t.join().unwrap().is_some());
+    }
+
     #[test]
     fn pcm_round_trip() {
         let samples: Vec<i16> = (0..SAMPLES_PER_PACKET as i32).map(|i| (i * 137 - 30000) as i16).collect();
@@ -967,55 +1060,49 @@ mod tests {
     }
 
     #[test]
+    fn target_splits_into_key_and_port() {
+        assert_eq!(split_port("pc"), ("pc", None));
+        assert_eq!(split_port("10.0.0.2:24860"), ("10.0.0.2", Some(24860)));
+        assert_eq!(split_port("pc/linux:9"), ("pc/linux", Some(9)));
+        assert_eq!(split_port("fe80::1"), ("fe80::1", None));
+        assert_eq!(split_port("pc:x"), ("pc:x", None));
+    }
+
+    #[test]
     fn peers_come_from_partner_list() {
-        use crate::config::{save_partners_to, Partner};
-        let d = std::env::temp_dir().join(format!("synergy-tools-peers-test-{}", std::process::id()));
-        let p = |b: u8, name: &str| Partner { id: [b; 8], host: "h".into(), secret: [b; 32], os: "linux".into(), name: name.into() };
-        save_partners_to(&d, &[p(1, "a"), p(2, "b")]).unwrap();
-        assert_eq!(peers_from(&d).unwrap(), HashMap::from([([1; 8], [1; 32]), ([2; 8], [2; 32])]));
-        std::fs::remove_dir_all(&d).unwrap();
+        let mut r = [0u8; 8];
+        getrandom::fill(&mut r).unwrap();
+        let d = std::env::temp_dir().join(format!("sdd-audio-{}", config::hex(&r)));
         assert!(peers_from(&d).unwrap_err().contains("not paired yet"));
+        for (n, b) in [("a", 1u8), ("b", 2)] {
+            let p = config::Partner { id: [b; 8], host: "h".into(), secret: [b + 10; 32], os: "linux".into(), name: n.into() };
+            config::add_partner_to(&d, p).unwrap();
+        }
+        let m = peers_from(&d).unwrap();
+        assert_eq!((m.len(), m[&[1; 8]], m[&[2; 8]]), (2, [11; 32], [12; 32]));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
-    #[test]
-    fn target_is_first_online_linux_partner() {
-        let p = |b: u8, os: &str| Partner { id: [b; 8], host: "h".into(), secret: [b; 32], os: os.into(), name: format!("p{b}") };
-        let ps = [p(1, "windows"), p(2, "linux"), p(3, "linux")];
-        assert_eq!(pick_target(&ps).map(|p| p.id), Some([2; 8]));
-        assert_eq!(pick_target(&ps[..1]), None);
-        assert_eq!(pick_target(&[]), None);
+    const PEER: [u8; 8] = [1; 8];
+    const PSK: [u8; 32] = [7; 32];
+
+    fn one_peer() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+        Ok(HashMap::from([(PEER, PSK)]))
     }
 
-    #[test]
-    fn receiver_bind_busy_message() {
-        let held = UdpSocket::bind("0.0.0.0:0").unwrap();
-        let e = bind_receiver(held.local_addr().unwrap().port()).unwrap_err();
-        // The tray cuts the audio line; what to stop must survive the cut.
-        let line = crate::tray::audio_line(&Status::Error(e), |id| crate::config::hex(id));
-        assert!(line.contains("synergy-audio"), "{line}");
-    }
-
-    fn no_peers() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
-        Err("none".into())
-    }
-
-    fn rx_with(peers: HashMap<[u8; 8], [u8; 32]>, load_peers: fn() -> Result<HashMap<[u8; 8], [u8; 32]>, String>) -> Rx {
-        Rx { peers, cur: None, next: None, promoted: 0, load_peers, loaded: None }
-    }
-
-    /// Rx paired with peer [1; 8] / secret [7; 32], handshake done; plus the sender's state.
-    fn session() -> (Rx, StatelessTransportState, Vec<u8>) {
-        let (peer, psk) = ([1u8; 8], [7u8; 32]);
-        let mut rx = rx_with(HashMap::from([(peer, psk)]), no_peers);
-        let (hs, hello_msg) = hello(&peer, &psk);
+    /// Rx with `PEER` paired and its handshake done: (rx, sender transport, the hello).
+    fn rx_session() -> (Rx, StatelessTransportState, Vec<u8>) {
+        let mut rx = Rx::new(one_peer);
+        rx.peers = one_peer().unwrap();
+        let (hs, hello_msg) = hello(&PEER, &PSK);
         let In::Send(reply) = rx.handle(&hello_msg, &mut Ctl::default()) else { panic!("no hello reply") };
         (rx, finish_hello(hs, reply.strip_prefix(HELLO_REPLY).unwrap()).unwrap(), hello_msg)
     }
 
     #[test]
     fn session_round_trip_tamper_replay_unpaired() {
-        let (peer, psk) = ([1u8; 8], [7u8; 32]);
-        let (mut rx, tx, hello_msg) = session();
+        let (peer, psk) = (PEER, PSK);
+        let (mut rx, tx, hello_msg) = rx_session();
         let ctl = &mut Ctl::default();
         let samples = vec![1i16, -2, 3, -4];
         let pkt = seal(&tx, 0, &pcm_bytes(&samples));
@@ -1025,12 +1112,12 @@ mod tests {
         let mut bad = seal(&tx, 1, &pcm_bytes(&samples));
         bad[12] ^= 1;
         assert_eq!(rx.handle(&bad, ctl), In::Rejected); // tampered
-        // Keepalive -> ack the sender can authenticate, carrying the receiver's Ctl;
-        // a replayed keepalive gets no ack, and one without a Ctl is rejected.
+        // Keepalive -> ack the sender can authenticate; a replayed keepalive gets no ack.
         let ka = seal(&tx, KA_BIT, &Ctl::default().encode());
         let In::Send(ack) = rx.handle(&ka, ctl) else { panic!("no ack") };
         assert_eq!(open(&tx, &ack), Some((0, Ctl::default().encode().to_vec())));
         assert_eq!(rx.handle(&ka, ctl), In::Late);
+        // A keepalive without a 9-byte Ctl is rejected.
         assert_eq!(rx.handle(&seal(&tx, KA_BIT | 1, &[]), ctl), In::Rejected);
         // Unpaired peer id, and a paired id with the wrong secret.
         assert_eq!(rx.handle(&hello(&[9; 8], &psk).1, ctl), In::Rejected);
@@ -1045,8 +1132,8 @@ mod tests {
     #[test]
     fn ctl_encode_decode() {
         let c = Ctl { stopped: true, epoch: 0x0102_0304_0506_0708 };
-        assert_eq!(c.encode(), [1, 8, 7, 6, 5, 4, 3, 2, 1]);
         assert_eq!(Ctl::decode(&c.encode()), Some(c));
+        assert_eq!(c.encode(), [1, 8, 7, 6, 5, 4, 3, 2, 1]);
         assert_eq!(Ctl::decode(&[0; 8]), None);
         assert_eq!(Ctl::decode(&[0; 10]), None);
         assert_eq!(Ctl::decode(&[2, 0, 0, 0, 0, 0, 0, 0, 0]), None);
@@ -1055,45 +1142,65 @@ mod tests {
     #[test]
     fn ctl_merge_newer_wins() {
         let mut c = Ctl { stopped: true, epoch: 3 };
-        assert!(c.merge(Ctl { stopped: false, epoch: 4 }));
+        assert!(!c.merge(Ctl { stopped: false, epoch: 2 })); // older: ignored
+        assert_eq!(c, Ctl { stopped: true, epoch: 3 });
+        assert!(c.merge(Ctl { stopped: false, epoch: 4 })); // newer resume wins
         assert_eq!(c, Ctl { stopped: false, epoch: 4 });
-        assert!(!c.merge(Ctl { stopped: true, epoch: 2 })); // older: ignored
-        assert_eq!(c, Ctl { stopped: false, epoch: 4 });
+        assert!(!c.merge(c)); // same: no change
     }
 
     #[test]
     fn ctl_tie_stop_wins() {
         let mut c = Ctl { stopped: false, epoch: 5 };
         assert!(c.merge(Ctl { stopped: true, epoch: 5 }));
-        assert!(!c.merge(Ctl { stopped: false, epoch: 5 }));
         assert_eq!(c, Ctl { stopped: true, epoch: 5 });
+        assert!(!c.merge(Ctl { stopped: false, epoch: 5 })); // tie: stays stopped
+        assert!(c.stopped);
     }
 
     #[test]
     fn stop_from_sender_reaches_receiver() {
-        let (mut rx, tx, _) = session();
-        let (stop, mut ctl) = (Ctl { stopped: true, epoch: 1 }, Ctl::default());
+        let (mut rx, tx, _) = rx_session();
+        let mut ctl = Ctl::default();
+        let stop = Ctl { stopped: true, epoch: 1 };
         let In::Send(ack) = rx.handle(&seal(&tx, KA_BIT, &stop.encode()), &mut ctl) else { panic!("no ack") };
         assert_eq!(ctl, stop);
-        assert_eq!(open(&tx, &ack).and_then(|(_, p)| Ctl::decode(&p)), Some(stop));
+        let (_, payload) = open(&tx, &ack).unwrap();
+        assert_eq!(Ctl::decode(&payload), Some(stop));
     }
 
     #[test]
     fn stopped_receiver_drops_audio() {
-        let (mut rx, tx, _) = session();
-        let r = rx.handle(&seal(&tx, 0, &pcm_bytes(&[1, 2, 3, 4])), &mut Ctl { stopped: true, epoch: 1 });
+        let (mut rx, tx, _) = rx_session();
+        let mut ctl = Ctl { stopped: true, epoch: 1 };
+        let r = rx.handle(&seal(&tx, 0, &pcm_bytes(&[1, 2, 3, 4])), &mut ctl);
         assert!(!matches!(r, In::Audio(_)), "{r:?}");
     }
 
-    static LOADS: AtomicU64 = AtomicU64::new(0);
-    fn counting_load() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
-        LOADS.fetch_add(1, Relaxed);
-        Ok(HashMap::new())
+    #[test]
+    fn unpaired_sender_session_revoked_on_reload() {
+        fn none() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+            Ok(HashMap::new())
+        }
+        let (mut rx, tx, _) = rx_session();
+        let ctl = &mut Ctl::default();
+        assert_eq!(rx.handle(&seal(&tx, 0, &pcm_bytes(&[1, 2])), ctl), In::Audio(vec![1, 2]));
+        rx.reload(); // still paired: session kept
+        assert_eq!(rx.handle(&seal(&tx, 1, &pcm_bytes(&[1, 2])), ctl), In::Audio(vec![1, 2]));
+        rx.load_peers = none; // unpaired
+        rx.reload();
+        assert_eq!(rx.handle(&seal(&tx, 2, &pcm_bytes(&[1, 2])), ctl), In::Rejected);
+        assert_eq!(rx.handle(&seal(&tx, KA_BIT, &Ctl::default().encode()), ctl), In::Rejected);
     }
 
     #[test]
     fn unknown_id_reloads_peers_once_per_second() {
-        let mut rx = rx_with(HashMap::new(), counting_load);
+        static LOADS: AtomicU64 = AtomicU64::new(0);
+        fn counting() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
+            LOADS.fetch_add(1, Relaxed);
+            Ok(HashMap::new())
+        }
+        let mut rx = Rx::new(counting);
         let ctl = &mut Ctl::default();
         assert_eq!(rx.handle(&hello(&[9; 8], &[7; 32]).1, ctl), In::Rejected);
         assert_eq!(rx.handle(&hello(&[9; 8], &[7; 32]).1, ctl), In::Rejected);
@@ -1102,30 +1209,32 @@ mod tests {
 
     #[test]
     fn keepalive_stops_on_quit() {
+        // A socket that reads but never answers: no receiver.
+        let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
+        silent.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let nobody = UdpSocket::bind("127.0.0.1:0").unwrap(); // bound, never read
-        sock.connect(nobody.local_addr().unwrap()).unwrap();
+        sock.connect(silent.local_addr().unwrap()).unwrap();
         let link = Arc::new(Mutex::new(Link { last_ack: None, mute: String::new(), rejected: 0 }));
-        let quit = Arc::new(AtomicBool::new(false));
+        let (sh, quit) = (Shared::new(true), Arc::new(AtomicBool::new(false)));
         let (done_tx, done) = std::sync::mpsc::channel();
         let q = quit.clone();
         std::thread::spawn(move || {
-            keepalive(sock, link, Arc::new(Mutex::new(None)), [1; 8], [7; 32], Shared::new(true), q);
+            keepalive(sock, link, Arc::new(Mutex::new(None)), [1; 8], [7; 32], sh, q);
             done_tx.send(()).unwrap();
         });
-        std::thread::sleep(Duration::from_millis(700));
+        silent.recv(&mut [0; 2048]).expect("no hello"); // the loop is running
         quit.store(true, Relaxed);
-        done.recv_timeout(Duration::from_secs(2)).expect("keepalive didn't stop on quit");
+        done.recv_timeout(Duration::from_secs(2)).expect("keepalive thread didn't stop on quit");
     }
 
     #[test]
     fn mute_decision() {
         use MuteAction::*;
-        // want = ack fresh && !stopped && auto_mute
         assert_eq!(mute_action(true, false, false), Mute);
         assert_eq!(mute_action(true, true, true), Nothing); // already ours
-        assert_eq!(mute_action(false, true, true), Unmute); // ack stale, stopped or auto-mute off
+        assert_eq!(mute_action(false, true, true), Unmute);
         assert_eq!(mute_action(false, false, false), Nothing);
+        assert_eq!(mute_action(false, false, true), Nothing);
         // The user's own mute: never touched, whether we want it muted or not.
         assert_eq!(mute_action(true, true, false), Nothing);
         assert_eq!(mute_action(false, true, false), Nothing);
@@ -1142,7 +1251,7 @@ mod tests {
 
     #[test]
     fn log_appends_then_starts_over_past_max() {
-        let path = std::env::temp_dir().join(format!("synergy-tools-audio-test-{}.log", std::process::id()));
+        let path = std::env::temp_dir().join(format!("synergy-tools-test-{}.log", std::process::id()));
         std::fs::write(&path, "old\n").unwrap();
         let mut f = open_log(path.to_str().unwrap()).unwrap();
         log_line(&mut f, "a", 10).unwrap();

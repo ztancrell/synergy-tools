@@ -75,7 +75,27 @@ pub fn begin(dir: &Path, name: &str) -> Result<Incoming, String> {
         ads.push(":Zone.Identifier");
         std::fs::write(&ads, "[ZoneTransfer]\r\nZoneId=3\r\n").map_err(|e| format!("cannot mark {name} as downloaded: {e}"))?;
     }
+    // Quarantine: Gatekeeper checks the file before it is opened. xattrs are per inode, so
+    // the hard link in `finish` keeps it. Like the Windows mark, failing to set it fails the
+    // receive (Drop removes the temp file).
+    #[cfg(target_os = "macos")]
+    {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let st = std::process::Command::new("xattr")
+            .args(["-w", "com.apple.quarantine", &quarantine_value(secs)])
+            .arg(&inc.tmp)
+            .status()
+            .map_err(|e| format!("cannot mark {name} as quarantined: {e}"))?;
+        if !st.success() {
+            return Err(format!("cannot mark {name} as quarantined: xattr {st}"));
+        }
+    }
     Ok(inc)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn quarantine_value(unix_secs: u64) -> String {
+    format!("0081;{unix_secs:x};synergy-tools;")
 }
 
 impl Incoming {
@@ -114,10 +134,6 @@ impl Incoming {
         }
         unreachable!()
     }
-
-    // ponytail: dropping does the same; kept as the explicit spelling of the Task 2 interface.
-    #[allow(dead_code)]
-    pub fn abort(self) {}
 }
 
 impl Drop for Incoming {
@@ -128,6 +144,11 @@ impl Drop for Incoming {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quarantine_value_format() {
+        assert_eq!(super::quarantine_value(255), "0081;ff;synergy-tools;");
+    }
+
     use super::*;
 
     fn tmpdir() -> PathBuf {

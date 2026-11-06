@@ -3,6 +3,7 @@
 
 mod audio;
 mod config;
+mod install;
 mod tray;
 mod notify;
 mod pair;
@@ -17,19 +18,25 @@ use transfer::{Event, Listener};
 pub(crate) const PORT: u16 = 24851;
 
 const USAGE: &str = "usage:
-  synergy-tools                                  tray app (drop window, receives files)
-  synergy-tools pair                             show a code and wait for the other PC to pair
-  synergy-tools pair <host> <code>               pair with the PC showing <code> (adds a partner)
-  synergy-tools partners                         list partners
-  synergy-tools partner <name> <host>            change a partner's address
-  synergy-tools unpair <name>                    forget a partner
-  synergy-tools files send [--to <name>] <file>...  send files to the online partner
-  synergy-tools files listen                     receive files without the tray app
-  synergy-tools audio send <host[:port]> [--log <file>]  stream this PC's audio to a partner
-                                                 (UDP 24850; --log: status to <file>, emptied past
-                                                 1 MiB, retry every 10s on errors)
-  synergy-tools audio receive [--buffer-ms N]    play what partners stream (default 20 ms)
-  synergy-tools audio unmute                     undo the auto-mute after a killed sender
+  synergy-tools                         tray app (drop window, receives files)
+  synergy-tools pair                    show a code and wait for the other PC to pair
+  synergy-tools pair <host> <code>      pair with the PC showing <code> (adds a partner)
+  synergy-tools partners                list paired PCs
+  synergy-tools partner <name> <host>   change a partner's address
+  synergy-tools unpair <name>           forget a partner
+  synergy-tools files send [--to <name>] <file>...
+                                        send files to the online partner (--to if several are online)
+  synergy-tools files listen            receive files without the tray app
+  synergy-tools audio send <partner>[:port] [--log <file>]
+                                        stream this PC's sound to a partner (name, name/os or host;
+                                        default port 24850);
+                                        --log: status to <file> (emptied past 1 MiB), retry on errors
+  synergy-tools audio receive [--buffer-ms N]
+                                        play a partner's sound (default buffer 20 ms)
+  synergy-tools audio unmute            undo the sender's auto-mute after it was killed
+  synergy-tools install                 copy to a per-user folder, start at login, add the \"Send to other PC\"
+                                        entry, remove the old synergy-audio/synergy-dragndrop
+  synergy-tools uninstall               undo install (pairings are kept)
   synergy-tools --version";
 
 fn downloads() -> Result<PathBuf, String> {
@@ -45,7 +52,7 @@ fn show(e: &Event) -> String {
             format!("{n} file{} received from {}: {}", if n == 1 { "" } else { "s" }, r.from, names.join(", "))
         }
         Event::Paired(name) => format!("Paired with {name}."),
-        Event::Refused(ip) => format!("refused connection from {ip}: not a partner"),
+        Event::Refused(ip) => format!("refused connection from {ip}: not a paired PC"),
         Event::Error(e) | Event::PairFailed(e) => e.clone(),
     }
 }
@@ -73,10 +80,25 @@ fn pair_host() -> Result<(), String> {
     })
 }
 
-/// CLI `audio receive`: UDP 24850, every partner, runs until killed.
-fn audio_receive(buffer_ms: usize) -> Result<(), String> {
-    let quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    audio::receive(audio::bind_receiver(audio::PORT)?, buffer_ms, audio::peers, audio::Shared::new(true), quit)
+fn send(to: Option<&str>, args: &[std::ffi::OsString]) -> Result<(), String> {
+    let paths: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
+    // Send To has no terminal, so the result also goes to a notification.
+    let res = transfer::check_files(&paths).and_then(|_| {
+        match transfer::target(transfer::online(&config::load_partners()?), to)? {
+            transfer::Target::Nobody => Err("not sent: no partner online".into()),
+            transfer::Target::One(p) => transfer::send_files(&p, &paths),
+            transfer::Target::Several(ps) => Err(format!(
+                "several partners online ({}): use --to <name>",
+                ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+            )),
+        }
+    });
+    match &res {
+        Ok(m) => notify::info(m),
+        Err(e) => notify::error(e),
+    }
+    println!("{}", res?);
+    Ok(())
 }
 
 fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
@@ -105,9 +127,9 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
             let id = config::find(&ps, name)?.id;
             let p = ps.iter_mut().find(|p| p.id == id).expect("found above");
             p.host = host.to_string();
-            let msg = format!("{} is now at {host}.", p.name);
+            let name = p.name.clone();
             config::save_partners(&ps)?;
-            println!("{msg}");
+            println!("{name} is now at {host}.");
         }
         ["unpair", name] => {
             let mut ps = config::load_partners()?;
@@ -116,34 +138,9 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
             config::save_partners(&ps)?;
             println!("Unpaired {}.", p.name);
         }
-        ["files", "send", ..] if lossy.len() > 2 => {
-            let (to, first) = match &lossy[2..] {
-                [flag, to, _, ..] if flag == "--to" => (Some(to.as_str()), 4),
-                [flag, ..] if flag == "--to" => return Err(USAGE.into()),
-                _ => (None, 2),
-            };
-            let paths: Vec<PathBuf> = args[first..].iter().map(PathBuf::from).collect();
-            // Send To has no terminal, so the result also goes to a notification.
-            let res = transfer::check_files(&paths).and_then(|_| {
-                let ps = config::load_partners()?;
-                if ps.is_empty() {
-                    return Err(config::NOT_PAIRED.into());
-                }
-                match transfer::target(transfer::online(&ps), to)? {
-                    transfer::Target::Nobody => Err(transfer::NOBODY_ONLINE.into()),
-                    transfer::Target::One(p) => transfer::send_files(&p, &paths),
-                    transfer::Target::Several(v) => {
-                        let names: Vec<&str> = v.iter().map(|p| p.name.as_str()).collect();
-                        Err(format!("several partners online ({}): use --to <name>", names.join(", ")))
-                    }
-                }
-            });
-            match &res {
-                Ok(m) => notify::info(m),
-                Err(e) => notify::error(e),
-            }
-            println!("{}", res?);
-        }
+        ["files", "send", "--to", to, _, ..] => send(Some(to), &args[4..])?,
+        ["files", "send", "--to", ..] => return Err(USAGE.into()),
+        ["files", "send", _, ..] => send(None, &args[2..])?,
         ["files", "listen"] => {
             let dir = downloads()?;
             let l = Listener::bind(PORT, dir.clone())?;
@@ -155,14 +152,23 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
                 }
             })
         }
-        ["audio", "send", target] => audio::send_to(target)?,
-        ["audio", "send", target, "--log", path] => audio::send_logged(target, path)?,
-        ["audio", "receive"] => audio_receive(audio::DEFAULT_BUFFER_MS)?,
+        // Registered once per process: send restarts (--log retries) must not stack handlers.
+        ["audio", "send", target] => {
+            audio::mute::on_ctrl_c_restore();
+            audio::run_send(target)?
+        }
+        ["audio", "send", target, "--log", path] => {
+            audio::mute::on_ctrl_c_restore();
+            audio::run_send_logged(target, path)?
+        }
+        ["audio", "receive"] => audio::run_receive(audio::DEFAULT_BUFFER_MS)?,
         ["audio", "receive", "--buffer-ms", n] => match n.parse() {
-            Ok(n) if n > 0 => audio_receive(n)?,
+            Ok(n) if n > 0 => audio::run_receive(n)?,
             _ => return Err(format!("--buffer-ms needs a positive integer, got {n:?}")),
         },
         ["audio", "unmute"] => audio::mute::restore(),
+        ["install"] => install::install()?,
+        ["uninstall"] => install::uninstall()?,
         _ => return Err(USAGE.into()),
     }
     Ok(())

@@ -28,16 +28,15 @@
 
 ## Decisions made by the planner (reviewer: check these)
 
-Approved by the user 2026-11-06, all eight. On #3 the user accepts the gap: during phase 1, Mac audio needs the old `synergy-audio` receiver on Linux.
-
 1. **One package at the repo root, no shared pairing crate.** After this plan there is exactly one consumer of pairing/crypto, so a second crate is a boundary with one user; modules (`pair.rs`, `config.rs`, `proto.rs`) give the same separation. Phase 2 (macOS) is the same binary, so it does not change this.
 2. **Old crates are absorbed with `git mv`, then their folders deleted** (Tasks 1 and 4), with their CI/release workflows and install scripts. Between phase 1 and phase 3 there are no install/autostart scripts and no release workflow; old GitHub releases stay as they are.
 3. **The Mac loses audio until phase 2.** The new Linux tray speaks a new pairing and protocol, so the released `synergy-audio` on macOS cannot pair with it. The code does not build on macOS this phase (notifications and drop window are Windows/Linux only).
+   Superseded: macOS is restored in phase 2; see `src/audio.rs`, `docs/audio.md` ("macOS (sender)") and `docs/files.md`.
 4. **Partner id = first 8 bytes of SHA-256("synergy-tools id" ‖ secret)**, identical on both sides; every connection (audio hello, files `S`, presence `H`) carries it so the listener picks the right secret. This is what makes several partners on one IP (Boot Camp) work.
 5. **Pairing replaces an entry with the same (name, os)**, otherwise appends. Name and OS are exchanged during pairing and bound into the SPAKE2 confirmations.
 6. **Presence = an authenticated ping** (`H` + id + Noise handshake on TCP 24851) every 5 s from the tray. Audio picks its target from it: the first online partner whose os is `linux`. A headless `audio receive` does not answer pings, so it only works with `audio send` from the CLI.
 7. **Stop is a last-writer-wins register** `(stopped, epoch)` carried in every keepalive and ack; the higher epoch wins, a tie goes to "stopped". Start or Stop on either side bumps the epoch. A restarted side starts at epoch 0, so if the other side is still stopped it adopts that stop; it streams again only when both sides restarted or someone presses Start.
-8. **Picker** = a context menu popped up on the drop window (muda `ContextMenu`) listing online partners. The CLI `files send` picks with `--to <name>`; with several online and no `--to` it fails and names them. Windows "Send to" (which has no terminal) gets that error as a notification; a per-partner Send To entry is for phase 3's installer.
+8. **Picker** = a context menu popped up on the drop window (muda `ContextMenu`) listing online partners. The CLI `files send` picks with `--to <name>`; with several online and no `--to` it fails and names them. Windows "Send to" (which has no terminal) gets that error as a notification; a per-partner Send To entry is for phase 3's installer. Superseded: one "Send to other PC" entry; see src/install.rs and the phase 3 plan.
 
 ## Review Focus
 
@@ -117,7 +116,7 @@ Within the two-agent cap: run 1 ‖ 3, then 2 (‖ 3 if still running), then 4 �
   Event::Paired(String)  // the partner's name
   ```
 - Partners file: one line per partner, `<id hex16> <host> <secret hex64> <os> <name>`; name is the rest of the line (may contain spaces). Written via tmp file + rename, mode 0600 on unix.
-- Pairing wire (TCP, after joiner's `P`): joiner → frame `msg_a`, frame `who_j`; host → frame `msg_b ‖ confB`, frame `who_h`; joiner → frame `confA`; host → frame `OK`. `who` bytes = `os + "\n" + name`, refused if over 1000 bytes or not UTF-8. `confB = SHA256("synergy-tools confirm B" ‖ key ‖ who_j ‖ who_h)`, `confA = SHA256("synergy-tools confirm A" ‖ key ‖ who_j ‖ who_h)`, secret = `SHA256("synergy-tools secret" ‖ key)`. SPAKE2 identities `synergy-tools joiner` / `synergy-tools host`.
+- Pairing wire (TCP, after joiner's `P`): joiner → frame `msg_a`, frame `who_j`; host → frame `msg_b ‖ confB`, frame `who_h`; joiner → frame `confA`; host → frame `OK`. `who` bytes = `os + "\n" + name`, refused if over 1000 bytes or not UTF-8. `confB = SHA256("synergy-tools confirm B" ‖ key ‖ SHA256(who_j) ‖ SHA256(who_h))`, `confA = SHA256("synergy-tools confirm A" ‖ key ‖ SHA256(who_j) ‖ SHA256(who_h))` (each `who` hashed first, so the split between them can't be shifted), secret = `SHA256("synergy-tools secret" ‖ key)`. SPAKE2 identities `synergy-tools joiner` / `synergy-tools host`.
 - Listener modes: `P` pairing (as today, saves via `add_partner_to`, host = peer IP); `S` + 8-byte id: look the id up in `load_partners_from(config_dir)`, unknown → `Event::Refused(ip)`, else `serve_one` with that secret.
 - CLI: `pair`, `pair <host> <code>`, `partners` (prints `name  os  host` per line, or "Not paired."), `partner <name> <host>` (change address, keeps secret), `unpair <name>`, `files send [--to <name>] <file>...` (no `--to` and exactly one partner: that one; several: error naming them and `--to`). `peer` is removed.
 - Tray (until Task 5): status line `Paired with <names>` / `Not paired`; a drop goes to the only partner, or fails with the same "several partners" error.
@@ -236,7 +235,7 @@ Works inside the old crate (`synergy-audio/`), which still builds and has its ow
   // tray.rs
   fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String
   ```
-- `run_in_tray`, receiver: `bind_receiver(PORT)` once; on error set `Status::Error(msg)` and stop (tray keeps running); else `receive(sock, DEFAULT_BUFFER_MS, peers, sh, never-set quit)`, on device error set `Status::Error` and retry every 10 s. Sender: every 1 s compare `pick_target(online)` with the running target's id; on change set the running `quit`, join, start `send` for the new one on its own thread; none → `Status::Waiting`; `send` error → `Status::Error`, retry after 10 s.
+- `run_in_tray`, receiver: Superseded: the tray now retries the bind every 5 s (`bind_retrying` in src/audio.rs). Was: `bind_receiver(PORT)` once; on error set `Status::Error(msg)` and stop (tray keeps running); else `receive(sock, DEFAULT_BUFFER_MS, peers, sh, never-set quit)`, on device error set `Status::Error` and retry every 10 s. Sender: every 1 s compare `pick_target(online)` with the running target's id; on change set the running `quit`, join, start `send` for the new one on its own thread; none → `Status::Waiting`; `send` error → `Status::Error`, retry after 10 s.
 - Menu, top to bottom: status line; separator; audio line (disabled); `Stop audio` / `Start audio` (one item, text follows `ctl.stopped`, calls `sh.set_stopped(!stopped)`); Windows only: `CheckMenuItem` `Auto-mute speakers` (initial `auto_mute_on()`, toggling sets `sh.auto_mute` and `set_auto_mute`); separator; `Hide drop window` / `Show drop window`; separator; `Pair…`; `Quit`. Quit calls `audio::mute::restore()` before exiting.
 - `audio_line` texts: receiver `Audio: receiving from <name>` / sender `Audio: streaming to <name>`; `Audio: stopped`; `Audio: waiting for partner`; `Audio: error: <msg>` truncated to 60 chars. The tray wakes every 1 s (`AUDIO_POLL`) to refresh it.
 

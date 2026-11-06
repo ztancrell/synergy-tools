@@ -1,5 +1,10 @@
-//! SPAKE2 pairing over a stream: an 8-digit code becomes a shared 32-byte secret (the Noise PSK).
-//! Both sides also exchange their name and OS, bound into the key confirmations.
+//! SPAKE2 pairing over a stream: an 8-digit code becomes a shared 32-byte secret (the Noise PSK),
+//! and each side learns the other's name and OS.
+//!
+//! Wire (after the joiner's `P`): joiner → `msg_a`, `who_j`; host → `msg_b ‖ confB`, `who_h`;
+//! joiner → `confA`; host → `OK` (all frames). `who` = `os + "\n" + name`, at most 1000 bytes.
+//! `conf = SHA256(label ‖ key ‖ SHA256(who_j) ‖ SHA256(who_h))`: both confirmations cover both
+//! `who`s, each hashed first so the boundary between them can't be shifted in transit.
 
 use crate::proto::{read_frame, write_frame};
 use sha2::{Digest, Sha256};
@@ -19,49 +24,6 @@ fn digest(parts: &[&[u8]]) -> [u8; 32] {
 fn spake(code: &str, joiner: bool) -> (Spake2<Ed25519Group>, Vec<u8>) {
     let (pw, a, b) = (Password::new(code), Identity::new(b"synergy-tools joiner"), Identity::new(b"synergy-tools host"));
     if joiner { Spake2::start_a(&pw, &a, &b) } else { Spake2::start_b(&pw, &a, &b) }
-}
-
-/// A PC as it introduces itself during pairing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Who {
-    pub name: String,
-    pub os: String,
-}
-
-impl Who {
-    pub fn this_pc() -> Who {
-        Who { name: crate::config::this_pc_name(), os: std::env::consts::OS.to_string() }
-    }
-
-    /// `os + "\n" + name`.
-    fn encode(&self) -> Vec<u8> {
-        format!("{}\n{}", self.os, self.name).into_bytes()
-    }
-
-    /// Refuses anything that would not fit one line of the partners file.
-    fn decode(b: &[u8]) -> Result<Who, String> {
-        let bad = || "pairing failed: bad name from the other PC".to_string();
-        if b.len() > 1000 {
-            return Err(bad());
-        }
-        let s = std::str::from_utf8(b).map_err(|_| bad())?;
-        let (os, name) = s.split_once('\n').ok_or_else(bad)?;
-        let ok_os = !os.is_empty() && os.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !ok_os || name.is_empty() || name.chars().any(char::is_control) {
-            return Err(bad());
-        }
-        Ok(Who { name: name.into(), os: os.into() })
-    }
-}
-
-/// First 8 bytes of SHA-256("synergy-tools id" ‖ secret); the same on both PCs.
-pub fn partner_id(secret: &[u8; 32]) -> [u8; 8] {
-    digest(&[b"synergy-tools id", secret])[..8].try_into().unwrap()
-}
-
-/// Key confirmation binding both introductions (each length-prefixed so bytes can't shift between them).
-fn confirm(label: &[u8], key: &[u8], who_j: &[u8], who_h: &[u8]) -> [u8; 32] {
-    digest(&[label, key, &(who_j.len() as u16).to_be_bytes(), who_j, &(who_h.len() as u16).to_be_bytes(), who_h])
 }
 
 /// Equal without stopping at the first differing byte.
@@ -98,8 +60,45 @@ fn io(e: std::io::Error) -> String {
     format!("pairing failed: {e}")
 }
 
+/// Who a PC says it is during pairing.
+#[derive(Debug)]
+pub struct Who {
+    pub name: String,
+    pub os: String,
+}
+
+impl Who {
+    pub fn this_pc() -> Who {
+        Who { name: crate::config::this_pc_name(), os: std::env::consts::OS.into() }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        format!("{}\n{}", self.os, self.name).into_bytes()
+    }
+
+    /// Refuses anything that could not be stored as one partners-file line.
+    fn decode(b: &[u8]) -> Result<Who, String> {
+        let bad = || "pairing failed: the other PC sent a bad name".to_string();
+        let s = std::str::from_utf8(b).ok().filter(|_| b.len() <= 1000).ok_or_else(bad)?;
+        let (os, name) = s.split_once('\n').ok_or_else(bad)?;
+        let ok = !os.is_empty() && !name.is_empty() && !os.contains(' ') && !s.chars().any(|c| c.is_control() && c != '\n');
+        if !ok || name.contains('\n') {
+            return Err(bad());
+        }
+        Ok(Who { name: name.into(), os: os.into() })
+    }
+}
+
+/// Sent before every session so the listener knows which secret to use.
+pub fn partner_id(secret: &[u8; 32]) -> [u8; 8] {
+    digest(&[b"synergy-tools id", secret])[..8].try_into().unwrap()
+}
+
+fn confirm(label: &[u8], key: &[u8], who_j: &[u8], who_h: &[u8]) -> [u8; 32] {
+    digest(&[label, key, &digest(&[who_j]), &digest(&[who_h])])
+}
+
 /// Host side (the caller already read `b'P'`). One attempt; the secret exists only after both confirmations match.
-/// Returns the joiner's introduction and the secret.
 pub fn host(s: &mut (impl Read + Write), code: &str, me: &Who) -> Result<(Who, [u8; 32]), String> {
     let msg_a = read_frame(s).map_err(io)?;
     let who_j = read_frame(s).map_err(io)?;
@@ -119,10 +118,10 @@ pub fn host(s: &mut (impl Read + Write), code: &str, me: &Who) -> Result<(Who, [
     Ok((them, digest(&[b"synergy-tools secret", &key])))
 }
 
-/// Join side: writes `b'P'` first. Returns the host's introduction and the secret.
+/// Join side: writes `b'P'` first.
 pub fn join(s: &mut (impl Read + Write), code: &str, me: &Who) -> Result<(Who, [u8; 32]), String> {
-    let who_j = me.encode();
     s.write_all(b"P").map_err(io)?;
+    let who_j = me.encode();
     let (sp, msg_a) = spake(code, true);
     write_frame(s, &msg_a).map_err(io)?;
     write_frame(s, &who_j).map_err(io)?;
@@ -152,7 +151,7 @@ mod tests {
         Who { name: name.into(), os: os.into() }
     }
 
-    fn pair_over_loopback(host_code: &str, join_code: &str, h_who: Who, j_who: Who) -> (Side, Side) {
+    fn pair_as(host_code: &str, join_code: &str, h_who: Who, j_who: Who) -> (Side, Side) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         let hc = host_code.to_string();
@@ -169,27 +168,45 @@ mod tests {
         (t.join().unwrap(), j)
     }
 
-    #[test]
-    fn same_code_same_secret_and_names() {
-        let (h, j) = pair_over_loopback("12345678", "12345678", who("Host PC", "linux"), who("pc-j", "windows"));
-        let ((hw, hs), (jw, js)) = (h.unwrap(), j.unwrap());
-        assert_eq!(hs, js);
-        assert_eq!(hw, who("pc-j", "windows"));
-        assert_eq!(jw, who("Host PC", "linux"));
+    fn pair_over_loopback(host_code: &str, join_code: &str) -> (Side, Side) {
+        pair_as(host_code, join_code, who("pc-h", "linux"), who("pc j", "windows"))
     }
 
     #[test]
-    fn wrong_code_fails_both_sides() {
-        let (h, j) = pair_over_loopback("12345678", "87654321", who("a", "linux"), who("b", "windows"));
-        assert!(h.unwrap_err().contains("wrong code"));
-        assert!(j.unwrap_err().contains("wrong code"));
+    fn same_code_same_secret_and_names() {
+        let (h, j) = pair_over_loopback("12345678", "12345678");
+        let ((hw, hs), (jw, js)) = (h.unwrap(), j.unwrap());
+        assert_eq!(hs, js);
+        assert_eq!((hw.name.as_str(), hw.os.as_str()), ("pc j", "windows"));
+        assert_eq!((jw.name.as_str(), jw.os.as_str()), ("pc-h", "linux"));
+    }
+
+    #[test]
+    fn shifted_who_split_changes_confirmation() {
+        let (j, h) = (b"linux\npc-j".to_vec(), b"windows\npc-h".to_vec());
+        let (j2, h2) = ([&j[..], b"X"].concat(), [&b"X"[..], &h].concat());
+        assert_ne!(confirm(b"l", b"k", &j, &h), confirm(b"l", b"k", &j2, &h2));
+    }
+
+    #[test]
+    fn bad_who_refused() {
+        assert!(Who::decode(b"linux\npc").is_ok());
+        assert!(Who::decode(b"linux\npc\nevil").is_err());
+        assert!(Who::decode(b"linux\npc\x07").is_err());
+        assert!(Who::decode(b"linux\npc\r").is_err());
     }
 
     #[test]
     fn oversized_who_refused() {
-        let (h, j) = pair_over_loopback("12345678", "12345678", who("a", "linux"), who(&"x".repeat(1001), "windows"));
-        assert!(h.is_err());
-        assert!(j.is_err());
+        let (h, j) = pair_as("12345678", "12345678", who("pc-h", "linux"), who(&"x".repeat(1000), "linux"));
+        assert!(h.is_err() && j.is_err());
+    }
+
+    #[test]
+    fn wrong_code_fails_both_sides() {
+        let (h, j) = pair_over_loopback("12345678", "87654321");
+        assert!(h.unwrap_err().contains("wrong code"));
+        assert!(j.unwrap_err().contains("wrong code"));
     }
 
     #[test]
