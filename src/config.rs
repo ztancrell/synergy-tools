@@ -101,6 +101,31 @@ pub fn add_partner(p: Partner) -> Result<(), String> {
     add_partner_to(&config_dir()?, p)
 }
 
+/// Windows auto-mute of the speakers while streaming: on unless the `auto-mute-off` marker exists.
+pub fn auto_mute_on_in(dir: &Path) -> bool {
+    !dir.join("auto-mute-off").exists()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))] // the toggle is Windows-only
+pub fn set_auto_mute_in(dir: &Path, on: bool) -> Result<(), String> {
+    let m = dir.join("auto-mute-off");
+    let r = if on {
+        std::fs::remove_file(&m).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+    } else {
+        std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&m, ""))
+    };
+    r.map_err(|e| format!("cannot save the auto-mute setting ({}): {e}", m.display()))
+}
+
+pub fn auto_mute_on() -> bool {
+    config_dir().map_or(true, |d| auto_mute_on_in(&d))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))] // the toggle is Windows-only
+pub fn set_auto_mute(on: bool) -> Result<(), String> {
+    set_auto_mute_in(&config_dir()?, on)
+}
+
 /// By name (ASCII case-insensitive) or host.
 pub fn find<'a>(ps: &'a [Partner], key: &str) -> Result<&'a Partner, String> {
     if ps.is_empty() {
@@ -152,6 +177,18 @@ mod tests {
 
     fn partner(name: &str, os: &str, host: &str, b: u8) -> Partner {
         Partner { id: [b; 8], host: host.into(), secret: [b; 32], os: os.into(), name: name.into() }
+    }
+
+    #[test]
+    fn auto_mute_default_on_and_saved() {
+        let d = tmp();
+        assert!(auto_mute_on_in(&d));
+        set_auto_mute_in(&d, false).unwrap();
+        assert!(!auto_mute_on_in(&d));
+        set_auto_mute_in(&d, true).unwrap();
+        assert!(auto_mute_on_in(&d) && !d.join("auto-mute-off").exists());
+        set_auto_mute_in(&d, true).unwrap(); // already on: fine
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

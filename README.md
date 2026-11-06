@@ -20,9 +20,21 @@ several; `synergy-tools partners` lists them. One code pairs audio and files. De
 
 ### Tray
 
-The tray menu's first line shows `Not paired`, `No partner online` or `Online: <names>`; the app
-pings its partners every 5 seconds. Dropped files go to the online partner, with a menu to pick
-one when several are online. Details: [docs/files.md](docs/files.md#daily-use).
+The tray menu, top to bottom:
+
+- status line (greyed out): `Not paired`, `No partner online` or `Online: <names>`; the app pings
+  its partners every 5 seconds
+- audio line (greyed out): `Audio: streaming to <name>` / `receiving from <name>`, `stopped`,
+  `waiting for partner` or `error: <message>`
+- `Stop audio` / `Start audio`: stops or starts the stream on both PCs (not saved)
+- `Auto-mute speakers` (Windows only, check mark, saved): mute the Windows speakers while Linux plays
+- `Hide drop window` / `Show drop window`
+- `Pair…`, `Quit` (Quit unmutes the speakers if the app muted them)
+
+Audio streams by itself when the app runs on both PCs: Linux receives, Windows sends to the first
+online Linux partner. Dropped files go to the online partner, with a menu to pick one when several
+are online. Details: [docs/audio.md](docs/audio.md#in-the-tray),
+[docs/files.md](docs/files.md#daily-use).
 
 ## Layout
 

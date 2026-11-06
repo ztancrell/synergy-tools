@@ -3,7 +3,8 @@
 
 use crate::config::Partner;
 use crate::transfer::Target;
-use crate::{config, notify, pair, transfer};
+use crate::audio::Status;
+use crate::{audio, config, notify, pair, transfer};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ use tao::window::WindowBuilder;
 use tao::platform::unix::WindowExtUnix as _;
 #[cfg(windows)]
 use tao::platform::windows::WindowExtWindows as _;
-use tray_icon::menu::{ContextMenu as _, Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::menu::{ContextMenu as _, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Requested size; the WM/GTK may enlarge it (200x200 on Openbox), so placement uses the real size.
@@ -23,6 +24,9 @@ const SIZE: f64 = 160.0;
 /// Gap kept free at the bottom-right (taskbar / panel).
 const MARGIN: f64 = 48.0;
 const RESET_AFTER: Duration = Duration::from_secs(3);
+
+/// How often the tray refreshes the audio line.
+const AUDIO_POLL: Duration = Duration::from_secs(1);
 
 /// How long the tray stays red after an error.
 const ERROR_FOR: Duration = Duration::from_secs(5);
@@ -232,6 +236,17 @@ fn status_text(paired: bool, online: &[Partner]) -> String {
     }
 }
 
+fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String {
+    match st {
+        Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
+        Status::Streaming(id) => format!("Audio: streaming to {}", name_of(id)),
+        Status::Stopped => "Audio: stopped".into(),
+        Status::Waiting => "Audio: waiting for partner".into(),
+        Status::Error(e) if e.chars().count() > 60 => format!("Audio: error: {}…", e.chars().take(60).collect::<String>()),
+        Status::Error(e) => format!("Audio: error: {e}"),
+    }
+}
+
 fn is_paired() -> bool {
     config::load_partners().is_ok_and(|ps| !ps.is_empty())
 }
@@ -283,6 +298,8 @@ fn start() -> Result<(), String> {
     let listener = transfer::Listener::bind(crate::PORT, dir)?;
     let pairing = listener.pairing.clone();
     let shared_online = Arc::new(Mutex::new(Vec::new()));
+    let sh = audio::Shared::new(config::auto_mute_on());
+    audio::run_in_tray(sh.clone(), shared_online.clone());
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -330,14 +347,23 @@ fn start() -> Result<(), String> {
         gtk_drop(&window, proxy.clone());
         gtk_minimized(&window, proxy.clone());
     }
-    let (status, toggle, pair_item, quit) = (
+    let (status, audio_item, stop_item, toggle, pair_item, quit) = (
         MenuItem::new(status_text(false, &[]), false, None),
+        MenuItem::new("", false, None), // the audio line, filled in on the first event
+        MenuItem::new("Stop audio", true, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
         MenuItem::new("Quit", true, None),
     );
+    let sep = PredefinedMenuItem::separator;
     let menu = Menu::new();
-    menu.append_items(&[&status, &toggle, &pair_item, &quit]).map_err(|e| format!("can't build the tray menu: {e}"))?;
+    let menu_err = |e: tray_icon::menu::Error| format!("can't build the tray menu: {e}");
+    menu.append_items(&[&status, &sep(), &audio_item, &stop_item]).map_err(menu_err)?;
+    #[cfg(windows)]
+    let auto_mute = tray_icon::menu::CheckMenuItem::new("Auto-mute speakers", true, config::auto_mute_on(), None);
+    #[cfg(windows)]
+    menu.append(&auto_mute).map_err(menu_err)?;
+    menu.append_items(&[&sep(), &toggle, &sep(), &pair_item, &quit]).map_err(menu_err)?;
     let mut tray: Option<TrayIcon> = None;
     let mut pending: Vec<PathBuf> = Vec::new();
     let mut t = Tracker::default();
@@ -356,6 +382,7 @@ fn start() -> Result<(), String> {
     let mut visible = true;
     let mut shown = title_for(&DropState::Idle);
     let mut shown_tray: Option<(TrayState, String)> = None;
+    let mut shown_audio: Option<(String, bool)> = None;
 
     event_loop.run(move |event, target, flow| {
         match event {
@@ -497,8 +524,12 @@ fn start() -> Result<(), String> {
                     reset_at = None;
                     spawn_send(&proxy, files, p);
                 } else if id == *quit.id() {
+                    audio::mute::restore();
                     *flow = ControlFlow::Exit;
                     return;
+                } else if id == *stop_item.id() {
+                    let stopped = sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped;
+                    sh.set_stopped(!stopped);
                 } else if id == *toggle.id() {
                     visible = !visible;
                     window.set_visible(visible);
@@ -513,6 +544,15 @@ fn start() -> Result<(), String> {
                         pair::show_code(&c)
                     ));
                     code = Some((c, now));
+                }
+                #[cfg(windows)]
+                if id == *auto_mute.id() {
+                    let on = auto_mute.is_checked(); // muda already flipped it
+                    // Off while we have the speakers muted: the sender unmutes on its next keepalive.
+                    sh.auto_mute.store(on, std::sync::atomic::Ordering::Relaxed);
+                    if let Err(e) = config::set_auto_mute(on) {
+                        notify::error(&e);
+                    }
                 }
             }
             Event::NewEvents(_) => {
@@ -549,9 +589,20 @@ fn start() -> Result<(), String> {
             }
             shown_tray = Some((ts, line));
         }
+        let a = {
+            let st = sh.status.lock().unwrap_or_else(|e| e.into_inner());
+            let name_of = |id: &[u8; 8]| online.iter().find(|p| p.id == *id).map_or_else(|| config::hex(id), |p| p.name.clone());
+            (audio_line(&st, name_of), sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped)
+        };
+        if shown_audio.as_ref() != Some(&a) {
+            audio_item.set_text(&a.0);
+            stop_item.set_text(if a.1 { "Start audio" } else { "Stop audio" });
+            shown_audio = Some(a);
+        }
         // Computed after handling, so a timer armed above takes effect at once.
         let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW)].into_iter().flatten().min();
-        *flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        let poll = Instant::now() + AUDIO_POLL;
+        *flow = ControlFlow::WaitUntil(wake.map_or(poll, |w| w.min(poll)));
     })
 }
 
@@ -570,6 +621,19 @@ mod tests {
         assert_eq!(l[0], PathBuf::from("/a/b c.txt"));
         assert_eq!(l[1], PathBuf::from("/x/y"));
         assert_eq!(l[2].as_os_str().as_bytes(), b"/bad\xff");
+    }
+
+    #[test]
+    fn audio_line_texts() {
+        use crate::audio::Status;
+        let name_of = |id: &[u8; 8]| format!("pc{}", id[0]);
+        let busy = if crate::audio::RECEIVER { "Audio: receiving from pc7" } else { "Audio: streaming to pc7" };
+        assert_eq!(audio_line(&Status::Streaming([7; 8]), name_of), busy);
+        assert_eq!(audio_line(&Status::Stopped, name_of), "Audio: stopped");
+        assert_eq!(audio_line(&Status::Waiting, name_of), "Audio: waiting for partner");
+        assert_eq!(audio_line(&Status::Error("no device".into()), name_of), "Audio: error: no device");
+        let long = audio_line(&Status::Error("é".repeat(70)), name_of);
+        assert_eq!(long, format!("Audio: error: {}…", "é".repeat(60)));
     }
 
     #[test]

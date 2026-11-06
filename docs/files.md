@@ -77,8 +77,9 @@ again (same name and OS) replaces its old entry instead of adding a second one.
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status: `Not paired`, `No partner online` or `Online: <names>`, updated within
   5 seconds of a partner starting or stopping (the hover tooltip with the same text
-  works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
-  `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
+  works on Windows only; Linux trays don't get it). Menu items for files: `Hide drop window` /
+  `Show drop window`, `Pair…`, `Quit`; the audio items are in [audio](audio.md#in-the-tray), the
+  full menu in the [README](../README.md#tray). If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
   exits. Starting a second copy fails with a notification, since the first one holds port 24851.
   On Linux the icon uses libappindicator (`libayatana-appindicator3`, with a fallback to an XEmbed

@@ -6,9 +6,35 @@ on the LAN; the other plays it on its default output, with a small jitter buffer
 latency. The stream is encrypted and authenticated with the partner secret from
 `synergy-tools pair` ([Pairing and encryption](#pairing-and-encryption)).
 
-**Status:** part of `synergy-tools` (`src/audio.rs`), command line only for now:
-`synergy-tools audio send|receive|unmute`. Windows sender → Linux receiver. The tray starts
-audio by itself in a later step (phase 1, Task 6).
+**Status:** part of `synergy-tools` (`src/audio.rs`). The tray app streams by itself
+([In the tray](#in-the-tray)); the command line `synergy-tools audio send|receive|unmute`
+still works. Windows sender → Linux receiver.
+
+## In the tray
+
+- **Streams by itself.** When `synergy-tools` (the tray app) runs on both PCs and they are
+  paired, audio starts on its own; nothing to type. The role comes from the platform: Linux
+  receives, Windows sends. The Windows side streams to the first online partner running
+  Linux (online = answers the tray's presence ping, every 5 s) and switches within about a
+  second when that changes; with none online it waits.
+- **Audio line** (greyed out, under the status line): `Audio: streaming to <name>` (Windows)
+  or `Audio: receiving from <name>` (Linux), `Audio: stopped`, `Audio: waiting for partner`,
+  or `Audio: error: <message>` (cut at 60 characters). It refreshes every second. After an
+  error (no audio device, say) audio retries every 10 s.
+- **Stop audio / Start audio**, on either PC, stops or starts the stream on both; the last
+  press wins. While stopped, Windows unmutes its speakers at once. Not saved: a restarted
+  side starts streaming again unless the other side is still stopped (then it adopts the
+  stop until someone presses Start).
+- **Auto-mute speakers** (Windows only, a check mark, on by default): mute the Windows
+  speakers while Linux plays the stream ([Auto-mute](#auto-mute-of-the-macs-speakers)).
+  Switching it off while they're muted unmutes them within half a second. Saved across
+  restarts (off = the file `auto-mute-off` in the config folder, `%APPDATA%\synergy-tools`).
+  **Quit** unmutes them too.
+- **Don't run `synergy-tools audio receive` alongside the tray app** on Linux: both want UDP
+  24850, and the tray's audio line then shows `Audio: error: can't bind UDP 24850 ...` (files
+  keep working). The same happens if the old `synergy-audio` receiver still autostarts; the
+  message says how to stop it. A headless `audio receive` also doesn't answer presence pings,
+  so a Windows tray never sees it online: it only works with `audio send` from the command line.
 
 ## Download and install
 
@@ -110,11 +136,11 @@ as in steps 5-7.
 
 ### Start the receiver automatically at Linux login (optional)
 
-Superseded: autostart comes with phase 3's installers; the tray starts audio by itself (phase 1, Task 6).
+Superseded: autostart comes with phase 3's installers; the tray starts audio by itself ([In the tray](#in-the-tray)).
 
 ### Start the sender automatically at Windows login (optional)
 
-Superseded: autostart comes with phase 3's installers; the tray starts audio by itself (phase 1, Task 6).
+Superseded: autostart comes with phase 3's installers; the tray starts audio by itself ([In the tray](#in-the-tray)).
 
 ### Auto-mute of the Mac's speakers
 
@@ -144,7 +170,8 @@ This works because on the author's MacBook Pro capture happens before the volume
 muted speakers go silent and the headphones keep playing. If muting silences your
 headphones too, your sound driver applies the volume before capture, and auto-mute will
 cut your stream while the receiver runs; you'd see `muted by us` in the status line and
-hear nothing. (There's no switch to turn auto-mute off yet; say so if you need one.)
+hear nothing. Then untick **Auto-mute speakers** in the tray menu (the command-line `audio
+send` always auto-mutes).
 
 ### Volume and crackles
 
@@ -181,8 +208,8 @@ connection allows a smaller buffer and less delay.
   keepalive's source address and port): its own counter. Both carry the 9-byte stop
   control as payload: 1 byte stopped (0 or 1) + 8-byte epoch (u64, little-endian); any
   other payload is rejected. Each side merges the other's into its own, last writer wins:
-  the higher epoch wins, a tie goes to stopped. Start or Stop on either side (from the tray,
-  phase 1 Task 6; the CLI never stops) bumps the epoch. While stopped the
+  the higher epoch wins, a tie goes to stopped. Start or Stop on either side (from the tray;
+  the CLI never stops) bumps the epoch. While stopped the
   sender drops captured audio, the receiver discards audio and empties its buffer, and the
   sender unmutes. Per session and type the nonce must grow: late, duplicate and replayed packets
   are dropped (`late/dup dropped`). Anything that doesn't authenticate (unknown peer id,
