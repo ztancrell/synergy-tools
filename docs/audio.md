@@ -52,8 +52,9 @@ partner streams. There is no systemd receiver service any more; `install` remove
 `synergy-audio` one. On Windows the sender is the tray too: run `.\synergy-tools.exe install | Out-Host`
 (same command, see [files.md "Install"](files.md#windows)); it first runs the old
 `synergy-audio.exe unmute` if present, then removes the old `synergy-audio` scheduled task, and
-starts the tray at login. The macOS installer and release downloads come later in phase 3;
-build from source for now ([Build](#build)).
+starts the tray at login. On macOS the sender is the tray too: `./synergy-tools install` (see
+[files.md "macOS"](files.md#macos)) makes the app `~/Applications/synergy-tools.app` and starts it at
+login.
 
 Headless (no desktop): `synergy-tools audio receive` is not installed by `install`. Run it
 yourself, for example from your own systemd user unit, and never together with the tray (both
@@ -65,14 +66,19 @@ it (src/install.rs).
 ### macOS (sender)
 
 macOS 14.6 or later, universal binary (see the README). Set the output device to 48 kHz
-(Audio MIDI Setup > the output device > Format). Run the tray from Terminal, as in
+(Audio MIDI Setup > the output device > Format). Install it as in
 [files.md "macOS"](files.md#macos). It streams by itself to the first online Linux partner;
 Stop/Start works as on Windows. There is no auto-mute on macOS: mute or lower the Mac's
 speakers yourself.
 
-The first run asks for **System Audio Recording** permission, naming Terminal: allow it
-(System Settings > Privacy & Security > Screen & System Audio Recording), then Quit and start
-again. Without it Linux gets silence while the Mac says streaming.
+The first run asks for **System Audio Recording** permission, naming synergy-tools (the app
+started at login or by `install`; Terminal if you run the bare binary from Terminal): allow it
+(System Settings > Privacy & Security > Screen & System Audio Recording), then Quit and open the
+app again. After an update macOS may ask again. Without it Linux gets silence while the Mac says
+streaming.
+
+Superseded: running the tray from Terminal, so the prompt named Terminal; `install` replaces it
+(src/install.rs).
 
 ## Author's setup
 

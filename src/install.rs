@@ -35,7 +35,6 @@ pub struct Places {
     pub local: PathBuf,
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn places() -> Result<Places, String> {
     let need = |d: Option<PathBuf>, what: &str| d.ok_or_else(|| format!("can't find your {what} folder"));
     Ok(Places {
@@ -118,7 +117,6 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// Ok(notes for the user).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn apply(steps: &[Step], run: &mut dyn FnMut(&[String]) -> bool) -> Result<Vec<String>, String> {
     let mut notes = vec![];
     for s in steps {
@@ -183,7 +181,7 @@ pub fn openbox_edit(text: &str, marker: &str, add: Option<&str>) -> String {
 }
 
 /// POSIX shell single quotes.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -380,15 +378,154 @@ pub fn windows(p: &Places, install: bool) -> Vec<Step> {
     ]
 }
 
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+const MAC_ID: &str = "io.github.ztancrell.synergy-tools";
+
+/// Text for a plist `<string>`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn plist(body: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n{body}</plist>\n"
+    )
+}
+
+/// The app bundle's Info.plist: menu-bar only (`LSUIElement`), and the usage string the System
+/// Audio Recording prompt shows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn info_plist() -> String {
+    plist(&format!(
+        "<dict>\n\
+         \t<key>CFBundleIdentifier</key>\n\t<string>{MAC_ID}</string>\n\
+         \t<key>CFBundleName</key>\n\t<string>synergy-tools</string>\n\
+         \t<key>CFBundleExecutable</key>\n\t<string>synergy-tools</string>\n\
+         \t<key>CFBundlePackageType</key>\n\t<string>APPL</string>\n\
+         \t<key>CFBundleShortVersionString</key>\n\t<string>{}</string>\n\
+         \t<key>LSMinimumSystemVersion</key>\n\t<string>14.6</string>\n\
+         \t<key>LSUIElement</key>\n\t<true/>\n\
+         \t<key>NSAudioCaptureUsageDescription</key>\n\t<string>synergy-tools streams this Mac's sound to your Linux PC.</string>\n\
+         </dict>\n",
+        env!("CARGO_PKG_VERSION")
+    ))
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn launch_agent(app: &Path) -> String {
+    plist(&format!(
+        "<dict>\n\
+         \t<key>Label</key>\n\t<string>{MAC_ID}</string>\n\
+         \t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/usr/bin/open</string>\n\t\t<string>{}</string>\n\t</array>\n\
+         \t<key>RunAtLoad</key>\n\t<true/>\n\
+         </dict>\n",
+        xml_escape(&app.display().to_string())
+    ))
+}
+
+/// The Quick Action's Info.plist: one Finder service for files and folders.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn workflow_info_plist() -> String {
+    plist(
+        "<dict>\n\
+         \t<key>NSServices</key>\n\t<array>\n\t\t<dict>\n\
+         \t\t\t<key>NSMenuItem</key>\n\t\t\t<dict>\n\t\t\t\t<key>default</key>\n\t\t\t\t<string>Send to other PC</string>\n\t\t\t</dict>\n\
+         \t\t\t<key>NSMessage</key>\n\t\t\t<string>runWorkflowAsService</string>\n\
+         \t\t\t<key>NSRequiredContext</key>\n\t\t\t<dict>\n\t\t\t\t<key>NSApplicationIdentifier</key>\n\t\t\t\t<string>com.apple.finder</string>\n\t\t\t</dict>\n\
+         \t\t\t<key>NSSendFileTypes</key>\n\t\t\t<array>\n\t\t\t\t<string>public.item</string>\n\t\t\t</array>\n\
+         \t\t</dict>\n\t</array>\n\
+         </dict>\n",
+    )
+}
+
+/// Automator document: one Run Shell Script action, the selected files passed as arguments.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn workflow_doc(bin: &Path) -> String {
+    let script = xml_escape(&format!("{} files send \"$@\"", sh_quote(&bin.display().to_string())));
+    plist(&format!(
+        "<dict>\n\
+         \t<key>AMApplicationVersion</key>\n\t<string>2.10</string>\n\
+         \t<key>AMDocumentVersion</key>\n\t<string>2</string>\n\
+         \t<key>actions</key>\n\t<array>\n\t\t<dict>\n\
+         \t\t\t<key>action</key>\n\t\t\t<dict>\n\
+         \t\t\t\t<key>AMAccepts</key>\n\t\t\t\t<dict>\n\
+         \t\t\t\t\t<key>Container</key>\n\t\t\t\t\t<string>List</string>\n\
+         \t\t\t\t\t<key>Optional</key>\n\t\t\t\t\t<true/>\n\
+         \t\t\t\t\t<key>Types</key>\n\t\t\t\t\t<array>\n\t\t\t\t\t\t<string>com.apple.cocoa.string</string>\n\t\t\t\t\t</array>\n\
+         \t\t\t\t</dict>\n\
+         \t\t\t\t<key>AMActionVersion</key>\n\t\t\t\t<string>2.0.3</string>\n\
+         \t\t\t\t<key>AMProvides</key>\n\t\t\t\t<dict>\n\
+         \t\t\t\t\t<key>Container</key>\n\t\t\t\t\t<string>List</string>\n\
+         \t\t\t\t\t<key>Types</key>\n\t\t\t\t\t<array>\n\t\t\t\t\t\t<string>com.apple.cocoa.string</string>\n\t\t\t\t\t</array>\n\
+         \t\t\t\t</dict>\n\
+         \t\t\t\t<key>ActionBundlePath</key>\n\t\t\t\t<string>/System/Library/Automator/Run Shell Script.action</string>\n\
+         \t\t\t\t<key>ActionName</key>\n\t\t\t\t<string>Run Shell Script</string>\n\
+         \t\t\t\t<key>ActionParameters</key>\n\t\t\t\t<dict>\n\
+         \t\t\t\t\t<key>COMMAND_STRING</key>\n\t\t\t\t\t<string>{script}</string>\n\
+         \t\t\t\t\t<key>CheckedForUserDefaultShell</key>\n\t\t\t\t\t<true/>\n\
+         \t\t\t\t\t<key>inputMethod</key>\n\t\t\t\t\t<integer>1</integer>\n\
+         \t\t\t\t\t<key>shell</key>\n\t\t\t\t\t<string>/bin/sh</string>\n\
+         \t\t\t\t\t<key>source</key>\n\t\t\t\t\t<string></string>\n\
+         \t\t\t\t</dict>\n\
+         \t\t\t\t<key>BundleIdentifier</key>\n\t\t\t\t<string>com.apple.RunShellScript</string>\n\
+         \t\t\t\t<key>CFBundleVersion</key>\n\t\t\t\t<string>2.0.3</string>\n\
+         \t\t\t\t<key>Class Name</key>\n\t\t\t\t<string>RunShellScriptAction</string>\n\
+         \t\t\t</dict>\n\
+         \t\t\t<key>isViewVisible</key>\n\t\t\t<integer>1</integer>\n\
+         \t\t</dict>\n\t</array>\n\
+         \t<key>connectors</key>\n\t<dict/>\n\
+         \t<key>workflowMetaData</key>\n\t<dict>\n\
+         \t\t<key>serviceApplicationBundleID</key>\n\t\t<string>com.apple.finder</string>\n\
+         \t\t<key>serviceInputTypeIdentifier</key>\n\t\t<string>com.apple.Automator.fileSystemObject</string>\n\
+         \t\t<key>serviceOutputTypeIdentifier</key>\n\t\t<string>com.apple.Automator.nothing</string>\n\
+         \t\t<key>workflowTypeIdentifier</key>\n\t\t<string>com.apple.Automator.servicesMenu</string>\n\
+         \t</dict>\n\
+         </dict>\n"
+    ))
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_app(p: &Places) -> PathBuf {
+    p.home.join("Applications").join("synergy-tools.app")
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn macos(p: &Places, install: bool) -> Vec<Step> {
+    use Step::*;
+    let app = macos_app(p);
+    let contents = app.join("Contents");
+    let bin = contents.join("MacOS").join("synergy-tools");
+    let agent = p.home.join("Library").join("LaunchAgents").join(format!("{MAC_ID}.plist"));
+    let wf = p.home.join("Library").join("Services").join("Send to other PC.workflow");
+    let pbs = Try(cmd(&["/System/Library/CoreServices/pbs", "-update"]));
+    let s = |p: &Path| p.display().to_string();
+    if !install {
+        return vec![Try(cmd(&["pkill", "-x", "-f", &s(&bin)])), Delete(app), Delete(agent), Delete(wf), pbs];
+    }
+    vec![
+        Copy(p.exe.clone(), bin.clone()),
+        Write(contents.join("Info.plist"), info_plist()),
+        // A downloaded binary keeps its quarantine mark; the ad-hoc signature covers the new Info.plist.
+        Try(cmd(&["xattr", "-dr", "com.apple.quarantine", &s(&app)])),
+        Try(cmd(&["codesign", "--force", "--sign", "-", &s(&app)])),
+        Write(agent, launch_agent(&app)),
+        Write(wf.join("Contents").join("Info.plist"), workflow_info_plist()),
+        Write(wf.join("Contents").join("document.wflow"), workflow_doc(&bin)),
+        pbs,
+    ]
+}
+
 pub fn installed_exe(p: &Places) -> PathBuf {
     #[cfg(windows)]
     return windows_dir(p).join("synergy-tools.exe");
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return macos_app(p).join("Contents").join("MacOS").join("synergy-tools");
+    #[cfg(not(any(windows, target_os = "macos")))]
     p.home.join(".local/bin/synergy-tools")
 }
 
-#[cfg(any(target_os = "linux", windows))]
 fn run_cmd(c: &[String]) -> bool {
     use std::process::{Command, Stdio};
     let mut k = Command::new(&c[0]);
@@ -398,27 +535,26 @@ fn run_cmd(c: &[String]) -> bool {
     k.status().is_ok_and(|s| s.success())
 }
 
-/// Start the installed tray unless one already holds TCP `PORT`.
-#[cfg(any(target_os = "linux", windows))]
-fn start_tray(bin: &Path) {
+/// Start the installed tray (`argv`; `shown` in messages) unless one already holds TCP `PORT`.
+fn start_tray(shown: &Path, argv: &[&std::ffi::OsStr]) {
     use std::process::{Command, Stdio};
     if std::net::TcpListener::bind(("0.0.0.0", crate::PORT)).is_err() {
         println!(
             "a synergy-tools tray is already running: Quit it from its menu and start {} to use this version",
-            bin.display()
+            shown.display()
         );
         return;
     }
-    let mut k = Command::new(bin);
-    k.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut k = Command::new(argv[0]);
+    k.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // Own process group: closing the terminal doesn't take the tray with it.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut k, 0);
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut k, 0x0000_0208); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     match k.spawn() {
-        Ok(_) => println!("started {}", bin.display()),
-        Err(e) => println!("couldn't start {}: {e}", bin.display()),
+        Ok(_) => println!("started {}", shown.display()),
+        Err(e) => println!("couldn't start {}: {e}", shown.display()),
     }
 }
 
@@ -442,7 +578,7 @@ pub fn install() -> Result<(), String> {
     for n in notes {
         println!("{n}");
     }
-    start_tray(&bin);
+    start_tray(&bin, &[bin.as_os_str()]);
     Ok(())
 }
 
@@ -468,7 +604,7 @@ pub fn install() -> Result<(), String> {
     for n in notes {
         println!("{n}");
     }
-    start_tray(&exe);
+    start_tray(&exe, &[exe.as_os_str()]);
     Ok(())
 }
 
@@ -483,14 +619,31 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
 pub fn install() -> Result<(), String> {
-    Err("install is not supported on this OS yet".into())
+    let p = places()?;
+    let notes = apply(&macos(&p, true), &mut run_cmd)?;
+    let app = macos_app(&p);
+    println!("installed {} (command line: {})", app.display(), installed_exe(&p).display());
+    println!("autostart at login: {}", p.home.join("Library/LaunchAgents").join(format!("{MAC_ID}.plist")).display());
+    println!("\"Send to other PC\" added to Finder's right-click menu (Quick Actions)");
+    for n in notes {
+        println!("{n}");
+    }
+    // Through LaunchServices, so macOS attributes the audio permission to the app.
+    start_tray(&app, &[std::ffi::OsStr::new("/usr/bin/open"), app.as_os_str()]);
+    Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
 pub fn uninstall() -> Result<(), String> {
-    Err("uninstall is not supported on this OS yet".into())
+    let p = places()?;
+    let notes = apply(&macos(&p, false), &mut run_cmd)?;
+    println!("uninstalled {} (pairings kept in {})", macos_app(&p).display(), p.config.join("synergy-tools").display());
+    for n in notes {
+        println!("{n}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -708,6 +861,112 @@ mod tests {
         assert!(i.iter().any(add) && u.iter().any(del));
         assert!(matches!(&u[0], Try(c) if c[0] == "taskkill" && c.contains(&format!("PID ne {}", std::process::id()))));
         assert!(matches!(u.iter().find(|st| matches!(st, Admin(_))), Some(Admin(c)) if c[4].contains("Remove-NetFirewallRule") && !c[4].contains("New-")));
+    }
+
+    /// (places, app, bin, agent, wf)
+    fn mp() -> (Places, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let p = places_in(Path::new("/h"));
+        let app = p.home.join("Applications").join("synergy-tools.app");
+        let bin = app.join("Contents").join("MacOS").join("synergy-tools");
+        let agent = p.home.join("Library").join("LaunchAgents").join("io.github.ztancrell.synergy-tools.plist");
+        let wf = p.home.join("Library").join("Services").join("Send to other PC.workflow");
+        (p, app, bin, agent, wf)
+    }
+
+    #[test]
+    fn macos_steps() {
+        let (p, app, bin, agent, wf) = mp();
+        let v = |a: &[&str]| cmd(a);
+        let want = vec![
+            Copy(p.exe.clone(), bin.clone()),
+            Write(app.join("Contents").join("Info.plist"), info_plist()),
+            Try(v(&["xattr", "-dr", "com.apple.quarantine", &s(&app)])),
+            Try(v(&["codesign", "--force", "--sign", "-", &s(&app)])),
+            Write(agent.clone(), launch_agent(&app)),
+            Write(wf.join("Contents").join("Info.plist"), workflow_info_plist()),
+            Write(wf.join("Contents").join("document.wflow"), workflow_doc(&bin)),
+            Try(v(&["/System/Library/CoreServices/pbs", "-update"])),
+        ];
+        assert_eq!(macos(&p, true), want);
+        let un = vec![
+            Try(v(&["pkill", "-x", "-f", &s(&bin)])),
+            Delete(app),
+            Delete(agent),
+            Delete(wf),
+            Try(v(&["/System/Library/CoreServices/pbs", "-update"])),
+        ];
+        assert_eq!(macos(&p, false), un);
+    }
+
+    #[test]
+    fn info_plist_keys() {
+        let t = info_plist();
+        let i = t.find("<key>LSUIElement</key>").unwrap();
+        assert!(t[i..].trim_start_matches("<key>LSUIElement</key>").trim_start().starts_with("<true/>"), "{t}");
+        for want in [
+            "<string>io.github.ztancrell.synergy-tools</string>",
+            "<key>NSAudioCaptureUsageDescription</key>",
+            "synergy-tools streams this Mac's sound to your Linux PC.",
+            &format!("<string>{}</string>", env!("CARGO_PKG_VERSION")),
+            "<string>14.6</string>",
+            "<string>APPL</string>",
+        ] {
+            assert!(t.contains(want), "{want} in {t}");
+        }
+    }
+
+    #[test]
+    fn launch_agent_opens_app() {
+        let (_, app, ..) = mp();
+        let t = launch_agent(&app);
+        for want in ["<string>/usr/bin/open</string>", &format!("<string>{}</string>", s(&app)), "<key>RunAtLoad</key>"] {
+            assert!(t.contains(want), "{want} in {t}");
+        }
+    }
+
+    #[test]
+    fn workflow_doc_quotes_path() {
+        let t = workflow_doc(Path::new("/Users/o'b&c/x"));
+        for want in [
+            r#"'/Users/o'\''b&amp;c/x' files send "$@""#,
+            "/System/Library/Automator/Run Shell Script.action",
+            "com.apple.Automator.servicesMenu",
+            "com.apple.Automator.fileSystemObject",
+        ] {
+            assert!(t.contains(want), "{want} in {t}");
+        }
+        assert_eq!(xml_escape("a&<b>"), "a&amp;&lt;b&gt;");
+        assert!(workflow_info_plist().contains("<string>Send to other PC</string>"));
+    }
+
+    #[test]
+    fn macos_uninstall_reverses_install() {
+        let (p, app, _, agent, wf) = mp();
+        let deleted: Vec<PathBuf> = macos(&p, false).into_iter().filter_map(|st| if let Delete(f) = st { Some(f) } else { None }).collect();
+        for st in macos(&p, true) {
+            if let Write(f, _) | WriteExec(f, _) | Copy(_, f) = st {
+                assert!(f.starts_with(&app) || f.starts_with(&wf) || f == agent, "{f:?}");
+                assert!(deleted.iter().any(|d| f.starts_with(d)), "{f:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plists_lint() {
+        let t = tmp();
+        for (n, text) in [
+            ("a", info_plist()),
+            ("b", launch_agent(Path::new("/Users/o'b&c/Applications/synergy-tools.app"))),
+            ("c", workflow_info_plist()),
+            ("d", workflow_doc(Path::new("/Users/o'b&c/x"))),
+        ] {
+            let f = t.join(n);
+            fs::write(&f, text).unwrap();
+            let st = std::process::Command::new("plutil").arg("-lint").arg(&f).status().unwrap();
+            assert!(st.success(), "{n}");
+        }
+        fs::remove_dir_all(&t).unwrap();
     }
 
     #[test]

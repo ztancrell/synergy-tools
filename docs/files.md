@@ -84,15 +84,46 @@ Superseded: the old scheduled tasks and manual copy; synergy-tools install repla
 
 ### macOS
 
-Run it from Terminal: `chmod +x synergy-tools && xattr -d com.apple.quarantine synergy-tools && ./synergy-tools`,
-or `nohup ./synergy-tools >/dev/null 2>&1 &` to be able to close the Terminal window. The icon sits
-in the menu bar, with no Dock icon; the drop window has no minimize button. If the macOS firewall
-asks, allow incoming connections (needed for TCP 24851). `install` for macOS and its Finder send
-entry come later in phase 3; until then drop files on the window or use `synergy-tools files send`.
+The downloaded binary is unsigned, so first clear Gatekeeper's quarantine mark, then install from
+Terminal:
 
-The first time a file arrives, macOS may ask "Terminal would like to access files in your
-Downloads folder". Allow it: otherwise receives fail with "Operation not permitted" and the
-sender sees "not sent".
+```sh
+xattr -d com.apple.quarantine synergy-tools
+chmod +x synergy-tools
+./synergy-tools install
+```
+
+`install` (code: `src/install.rs`):
+
+- makes a minimal app bundle `~/Applications/synergy-tools.app` (the program plus an Info.plist,
+  ad-hoc signed with `codesign`, quarantine mark removed). It has no Dock icon. The command line
+  is now `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools`;
+- starts it at login with the LaunchAgent
+  `~/Library/LaunchAgents/io.github.ztancrell.synergy-tools.plist` (it runs `open` on the app);
+  macOS shows a "Background item added" notification;
+- adds the Finder Quick Action `~/Library/Services/Send to other PC.workflow`: right-click files >
+  Quick Actions > **Send to other PC**. If it doesn't show, enable it in System Settings >
+  Keyboard > Keyboard Shortcuts > Services > Files and Folders, or build it by hand (below);
+- starts the tray (if one already runs it says so: Quit that one and open the app). There is
+  nothing old to remove on macOS.
+
+The icon sits in the menu bar, with no Dock icon; the drop window has no minimize button. If the
+macOS firewall asks, allow incoming connections (needed for TCP 24851). To update, run the new
+binary's `install` again, then Quit the tray and open the app again. Your pairings
+(`~/Library/Application Support/synergy-tools`) are kept.
+
+Quick Action by hand (only if Finder never shows it): Automator > New Document > Quick Action;
+"Workflow receives current" **files or folders** in **Finder**; add **Run Shell Script**, Shell
+`/bin/sh`, Pass input **as arguments**, script
+`~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools files send "$@"`; save as
+"Send to other PC".
+
+The first time a file arrives, macOS may ask "synergy-tools would like to access files in your
+Downloads folder" ("Terminal" if you started the program from Terminal). Allow it: otherwise
+receives fail with "Operation not permitted" and the sender sees "not sent".
+
+Superseded: running the bare binary from Terminal with `nohup`; `install` replaces it
+(src/install.rs).
 
 ## Pairing
 
@@ -150,9 +181,9 @@ Script Editor in System Settings → Notifications; allow them there if none app
   no minimize button (see "macOS" above).
 - **Right-click:** `synergy-tools install` adds "Send to other PC" to Thunar
   (Send To), Dolphin and Nautilus (Scripts) on Linux, and to the Explorer Send To submenu on
-  Windows (right-click a file > Show more options on Windows 11 > Send to); it sends to the online
-  partner like `synergy-tools files send`. The Finder entry comes later in phase 3; until then
-  use the drop window or `synergy-tools files send` there.
+  Windows (right-click a file > Show more options on Windows 11 > Send to), and the Quick Action
+  Finder > right-click > Quick Actions > Send to other PC on macOS; it sends to the online
+  partner like `synergy-tools files send`.
   Superseded: the entries came from the removed install scripts; see [Install](#install).
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
@@ -179,7 +210,7 @@ synergy-tools files send [--to <name>] <file>...
                                       send files to the online partner (--to if several are online)
 synergy-tools files listen            receive files without the tray app
 synergy-tools install                 copy to a per-user folder, start at login, add the "Send to other PC"
-                                      entry, remove the old synergy-audio/synergy-dragndrop (Linux and Windows for now)
+                                      entry, remove the old synergy-audio/synergy-dragndrop
 synergy-tools uninstall               undo install (pairings are kept)
 synergy-tools --version
 ```
@@ -263,6 +294,10 @@ entry and the firewall rule `synergy-tools (TCP 24851)` (that one needs administ
 otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-tools`. Run from
 the installed program itself, it can't delete its own folder: delete the folder by hand.
 Pairings are kept; delete `%APPDATA%\synergy-tools` to forget them.
+
+macOS: `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools uninstall` stops the tray and
+deletes the app bundle, the LaunchAgent and the Quick Action. Pairings are kept; delete
+`~/Library/Application Support/synergy-tools` to forget them.
 
 Superseded: the per-tool uninstall scripts; synergy-tools uninstall replaces them (src/install.rs).
 
