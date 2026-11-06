@@ -73,6 +73,8 @@ pub enum UserEvent {
     Dropped(Vec<PathBuf>),
     /// The set of online partners changed: re-read the shared online list.
     Online,
+    /// The Update item's run finished: (exe, new version if swapped).
+    Updated(Result<(PathBuf, Option<String>), String>),
 }
 
 /// `text/uri-list` body -> local paths. Only `file://` URIs (host empty or `localhost`) count.
@@ -283,9 +285,19 @@ pub fn run() -> Result<(), String> {
 }
 
 fn start() -> Result<(), String> {
-    // Single instance: the port is the lock.
+    // Single instance: the port is the lock. Retried for 5 s: after the Update item the old tray
+    // starts this one, then stops its audio and exits.
     let dir = dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())?;
-    let listener = transfer::Listener::bind(crate::PORT, dir)?;
+    let mut tries = 0;
+    let listener = loop {
+        match transfer::Listener::bind(crate::PORT, dir.clone()) {
+            Err(_) if tries < 25 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            r => break r?,
+        }
+    };
     let pairing = listener.pairing.clone();
     // Shared with the presence thread (and the audio section).
     let online: Arc<Mutex<Vec<Partner>>> = Arc::new(Mutex::new(Vec::new()));
@@ -343,14 +355,29 @@ fn start() -> Result<(), String> {
         gtk_drop(&window, proxy.clone());
         gtk_minimized(&window, proxy.clone());
     }
-    let (status, audio_item, stop_item, toggle, pair_item, quit) = (
+    let (status, audio_item, stop_item, toggle, pair_item, update_item, quit) = (
         MenuItem::new(status_text(false, &[]), false, None),
         MenuItem::new(audio_line(&Status::Waiting, false, |_| String::new()), false, None),
         MenuItem::new(stop_text(false), true, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
+        MenuItem::new("Update", true, None),
         MenuItem::new("Quit", true, None),
     );
+    // Quit while we have the speakers muted unmutes them. Stop the sender first (waiting up to
+    // 1 s for it to unmute), so it can't mute again after the restore.
+    let stop_audio = {
+        let sh = sh.clone();
+        move || {
+            sh.auto_mute.store(false, std::sync::atomic::Ordering::Relaxed);
+            audio_quit.store(true, std::sync::atomic::Ordering::Relaxed);
+            let until = Instant::now() + Duration::from_secs(1);
+            while !audio::RECEIVER && !audio_thread.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            audio::mute::restore();
+        }
+    };
     #[cfg(windows)]
     let auto_mute = tray_icon::menu::CheckMenuItem::new("Auto-mute speakers", true, sh.auto_mute.load(std::sync::atomic::Ordering::Relaxed), None);
     let menu = Menu::new();
@@ -359,7 +386,7 @@ fn start() -> Result<(), String> {
         // Windows sender only: whether streaming mutes the speakers (saved across restarts).
         #[cfg(windows)]
         menu.append(&auto_mute)?;
-        menu.append_items(&[&PredefinedMenuItem::separator(), &toggle, &PredefinedMenuItem::separator(), &pair_item, &quit])
+        menu.append_items(&[&PredefinedMenuItem::separator(), &toggle, &PredefinedMenuItem::separator(), &pair_item, &update_item, &quit])
     })();
     built.map_err(|e| format!("can't build the tray menu: {e}"))?;
     let mut tray: Option<TrayIcon> = None;
@@ -536,6 +563,30 @@ fn start() -> Result<(), String> {
                 // A stranger knocking is logged by the listener's caller in the CLI; here it is only noise.
                 transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not a paired PC"),
             },
+            Event::UserEvent(UserEvent::Updated(r)) => {
+                update_item.set_enabled(true);
+                update_item.set_text("Update");
+                match r {
+                    // The new tray waits for the port (start() retries) while this one exits.
+                    Ok((exe, new @ Some(_))) => match crate::update::restart(&exe) {
+                        Ok(()) => {
+                            notify::info(&format!("{}; restarting", crate::update::done(&new)));
+                            stop_audio();
+                            *flow = ControlFlow::Exit;
+                            return;
+                        }
+                        Err(e) => {
+                            notify::error(&format!("{}, but can't start it ({e}): Quit and start synergy-tools again", crate::update::done(&new)));
+                            error_until = Some(Instant::now() + ERROR_FOR);
+                        }
+                    },
+                    Ok((_, None)) => notify::info(&crate::update::done(&None)),
+                    Err(e) => {
+                        notify::error(&format!("Update failed: {e}"));
+                        error_until = Some(Instant::now() + ERROR_FOR);
+                    }
+                }
+            }
             Event::UserEvent(UserEvent::Online) => {
                 // ponytail: an unpair from a terminal shows when the online set next changes.
                 paired = is_paired();
@@ -558,17 +609,19 @@ fn start() -> Result<(), String> {
                     reset_at = None;
                     spawn_send(&proxy, p, files);
                 } else if id == *quit.id() {
-                    // Quit while we have the speakers muted unmutes them. Stop the sender first
-                    // (waiting up to 1 s for it to unmute), so it can't mute again after the restore.
-                    sh.auto_mute.store(false, std::sync::atomic::Ordering::Relaxed);
-                    audio_quit.store(true, std::sync::atomic::Ordering::Relaxed);
-                    let until = Instant::now() + Duration::from_secs(1);
-                    while !audio::RECEIVER && !audio_thread.is_finished() && Instant::now() < until {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    audio::mute::restore();
+                    stop_audio();
                     *flow = ControlFlow::Exit;
                     return;
+                } else if id == *update_item.id() {
+                    update_item.set_enabled(false);
+                    update_item.set_text("Updating…");
+                    let proxy = proxy.clone();
+                    std::thread::spawn(move || {
+                        let r = std::env::current_exe()
+                            .map_err(|e| format!("can't find this program's path: {e}"))
+                            .and_then(|exe| crate::update::update(&exe).map(|v| (exe, v)));
+                        let _ = proxy.send_event(UserEvent::Updated(r));
+                    });
                 } else if id == *stop_item.id() {
                     let stopped = sh.ctl.lock().unwrap_or_else(|e| e.into_inner()).stopped;
                     sh.set_stopped(!stopped);

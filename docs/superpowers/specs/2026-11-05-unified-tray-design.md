@@ -72,6 +72,17 @@ release workflows (tags `audio-v*`, `dragndrop-v*`).
 - Mac notifications are text-only (no click action) until an app bundle exists.
 - The macOS release artifact and login autostart are phase 3.
 
+## Updates (decided by the user 2026-11-06)
+
+1. **Channel:** a rolling `latest` GitHub release, as in gamebooster-rs. Every push to `main`
+   that changes the program runs CI for all three OSes and publishes the three builds
+   (`synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64.exe`,
+   `synergy-tools-macos-universal`) to `latest`; `v*` tag releases stay.
+2. **Trigger:** `synergy-tools update` and a tray **Update** item that updates and restarts the
+   tray. No background or periodic check.
+
+Built in `src/update.rs` and `.github/workflows/release.yml`; user docs in README "Updates".
+
 ## Calls made by Claude (not discussed with the user; check these)
 
 - **Mute toggle** = turn the existing Windows auto-mute (speakers muted while Linux is

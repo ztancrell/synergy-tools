@@ -5,6 +5,7 @@ mod audio;
 mod config;
 mod install;
 mod tray;
+mod update;
 mod notify;
 mod pair;
 mod proto;
@@ -37,6 +38,7 @@ const USAGE: &str = "usage:
   synergy-tools install                 copy to a per-user folder, start at login, add the \"Send to other PC\"
                                         entry, remove the old synergy-audio/synergy-dragndrop
   synergy-tools uninstall               undo install (pairings are kept)
+  synergy-tools update                  replace this program with the latest build from GitHub
   synergy-tools --version";
 
 fn downloads() -> Result<PathBuf, String> {
@@ -105,7 +107,7 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
     // Lossy only for subcommand/host/code matching; `files send` paths keep their raw bytes.
     let lossy: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
     match lossy.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["--version"] => println!("synergy-tools {}", env!("CARGO_PKG_VERSION")),
+        ["--version"] => println!("synergy-tools {}", update::VERSION),
         [] => tray::run()?,
         ["pair"] => pair_host()?,
         ["pair", host, code] => {
@@ -169,6 +171,14 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
         ["audio", "unmute"] => audio::mute::restore(),
         ["install"] => install::install()?,
         ["uninstall"] => install::uninstall()?,
+        ["update"] => {
+            let exe = std::env::current_exe().map_err(|e| format!("can't find this program's path: {e}"))?;
+            let new = update::update(&exe)?;
+            println!("{}", update::done(&new));
+            if new.is_some() {
+                println!("A running tray keeps the old version until you Quit and start it again (or use its Update item).");
+            }
+        }
         _ => return Err(USAGE.into()),
     }
     Ok(())

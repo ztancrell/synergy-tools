@@ -39,8 +39,9 @@ chmod +x synergy-tools-linux-x86_64
 - starts the tray. If a tray already runs it says so instead: Quit that one from its menu and
   start `~/.local/bin/synergy-tools`.
 
-To update, get the new binary and run `./synergy-tools-linux-x86_64 install` again (it is safe to repeat), then
-Quit the running tray and start it again. Your pairings (`~/.config/synergy-tools`) are kept.
+To update, use the tray's Update item or `synergy-tools update` ([Updates](#updates)). Your pairings
+(`~/.config/synergy-tools`) are kept. Superseded: downloading the new binary and running its
+`install` again (still works, e.g. for a build without Update).
 
 Superseded: the per-tool install-autostart.sh scripts; synergy-tools install replaces them (src/install.rs).
 
@@ -82,8 +83,9 @@ Windows SmartScreen may say "Windows protected your PC" (the program is unsigned
 After install the program is `%LOCALAPPDATA%\Programs\synergy-tools\synergy-tools.exe` (not on
 PATH); the downloaded file can be deleted. Commands below use that path.
 
-To update, run the new program's `install` again (safe to repeat; the running tray keeps working
-until you Quit it and start it again). Your pairings (`%APPDATA%\synergy-tools`) are kept.
+To update, use the tray's Update item or `synergy-tools update` ([Updates](#updates)). Your pairings
+(`%APPDATA%\synergy-tools`) are kept. Superseded: running the new program's `install` again (still
+works, e.g. for a build without Update).
 
 Superseded: the old scheduled tasks and manual copy; synergy-tools install replaces them
 (src/install.rs). Superseded: commands written as `.\synergy-tools.exe …`; after install use the
@@ -115,9 +117,10 @@ chmod +x synergy-tools-macos-universal
   nothing old to remove on macOS.
 
 The icon sits in the menu bar, with no Dock icon; the drop window has no minimize button. If the
-macOS firewall asks, allow incoming connections (needed for TCP 24851). To update, run the new
-binary's `install` again, then Quit the tray and open the app again. Your pairings
-(`~/Library/Application Support/synergy-tools`) are kept.
+macOS firewall asks, allow incoming connections (needed for TCP 24851). To update, use the tray's Update item or
+`synergy-tools update` ([Updates](#updates)). Your pairings
+(`~/Library/Application Support/synergy-tools`) are kept. Superseded: running the new binary's
+`install` again (still works, e.g. for a build without Update).
 
 Quick Action by hand (only if Finder never shows it): Automator > New Document > Quick Action;
 "Workflow receives current" **files or folders** in **Finder**; add **Run Shell Script**, Shell
@@ -132,6 +135,25 @@ Recording prompt, it may come back after each update (the ad-hoc re-sign changes
 
 Superseded: running the bare binary from Terminal with `nohup`; `install` replaces it
 (src/install.rs).
+
+### Updates
+
+The tray's **Update** item (or `synergy-tools update`; code: `src/update.rs`) downloads this OS's
+asset from the rolling `latest` release
+(`https://github.com/ztancrell/synergy-tools/releases/download/latest/<asset>`) with `curl`,
+checks that it is an executable for this OS and that its `--version` runs, and replaces the
+program that is running (after `install`, the installed one): the old file is renamed to
+`<program>.old` (deleted at once on Linux and macOS; on Windows the next update deletes it) and
+renamed back if the new one can't be put in place. Same version: `Already up to date: …`.
+On macOS it re-signs `~/Applications/synergy-tools.app` ad hoc like `install`, so the System Audio
+Recording and Downloads prompts may come back once. The tray then shows `Updated: … -> …`, starts
+the new version (macOS: `open -n` on the app), stops audio and unmutes like Quit, and exits; the
+new tray waits up to 5 seconds for port 24851. Errors show as a notification and the tray keeps
+running. The terminal command leaves a running tray on the old version until you Quit it and
+start it again. Nothing checks for updates by itself.
+
+**Update every machine**: both sides speak one protocol, so run Update on each tray (or
+`synergy-tools update` on each).
 
 ## Pairing
 
@@ -202,9 +224,10 @@ Script Editor in System Settings → Notifications; allow them there if none app
   5 seconds (the hover tooltip with the same text
   works on Windows and macOS; Linux trays don't get it). Menu: status line, the audio section
   ([docs/audio.md](audio.md#in-the-tray)), `Hide drop window` / `Show drop window`, `Pair…`,
-  `Quit`. If the tray icon can't be created (library missing), a notification says so
+  `Update` ([Updates](#updates)), `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
-  exits. Starting a second copy fails with a notification, since the first one holds port 24851.
+  exits. Starting a second copy fails with a notification after about 5 seconds (it retries, for the
+  Update restart), since the first one holds port 24851.
   On Linux the icon uses libappindicator (`libayatana-appindicator3`, with a fallback to an XEmbed
   icon for panels like tint2 without StatusNotifierItem support).
 
@@ -223,6 +246,7 @@ synergy-tools files listen            receive files without the tray app
 synergy-tools install                 copy to a per-user folder, start at login, add the "Send to other PC"
                                       entry, remove the old synergy-audio/synergy-dragndrop
 synergy-tools uninstall               undo install (pairings are kept)
+synergy-tools update                  replace this program with the latest build from GitHub
 synergy-tools --version
 ```
 

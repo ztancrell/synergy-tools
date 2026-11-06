@@ -50,7 +50,7 @@ fn show_cmd(c: &[String]) -> String {
     c.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ")
 }
 
-fn with_ext(p: &Path, ext: &str) -> PathBuf {
+pub(crate) fn with_ext(p: &Path, ext: &str) -> PathBuf {
     let mut s = p.as_os_str().to_owned();
     s.push(ext);
     PathBuf::from(s)
@@ -80,7 +80,7 @@ fn write(p: &Path, text: &str, exec: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn make_exec(_p: &Path) -> std::io::Result<()> {
+pub(crate) fn make_exec(_p: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -537,7 +537,7 @@ pub fn installed_exe(p: &Places) -> PathBuf {
     p.home.join(".local/bin/synergy-tools")
 }
 
-fn run_cmd(c: &[String]) -> bool {
+pub(crate) fn run_cmd(c: &[String]) -> bool {
     use std::process::{Command, Stdio};
     let mut k = Command::new(&c[0]);
     k.args(&c[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -548,7 +548,6 @@ fn run_cmd(c: &[String]) -> bool {
 
 /// Start the installed tray (`argv`; `shown` in messages) unless one already holds TCP `PORT`.
 fn start_tray(shown: &Path, argv: &[&std::ffi::OsStr]) {
-    use std::process::{Command, Stdio};
     // Retry ~2 s: an old program just killed by cleanup may still hold the port.
     let busy = (0..10).all(|i| {
         if i > 0 {
@@ -563,6 +562,15 @@ fn start_tray(shown: &Path, argv: &[&std::ffi::OsStr]) {
         );
         return;
     }
+    match spawn_detached(argv) {
+        Ok(()) => println!("started {}", shown.display()),
+        Err(e) => println!("couldn't start {}: {e}", shown.display()),
+    }
+}
+
+/// Start `argv` in the background, detached from this process and its terminal.
+pub(crate) fn spawn_detached(argv: &[&std::ffi::OsStr]) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
     let mut k = Command::new(argv[0]);
     k.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // Own process group: closing the terminal doesn't take the tray with it.
@@ -570,10 +578,7 @@ fn start_tray(shown: &Path, argv: &[&std::ffi::OsStr]) {
     std::os::unix::process::CommandExt::process_group(&mut k, 0);
     #[cfg(windows)]
     std::os::windows::process::CommandExt::creation_flags(&mut k, 0x0000_0208); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    match k.spawn() {
-        Ok(_) => println!("started {}", shown.display()),
-        Err(e) => println!("couldn't start {}: {e}", shown.display()),
-    }
+    k.spawn().map(|_| ())
 }
 
 #[cfg(target_os = "linux")]

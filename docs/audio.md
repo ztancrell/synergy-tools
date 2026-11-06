@@ -179,6 +179,10 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 ### Every update after that, autostart
 
+Use each tray's Update item, or `synergy-tools update` on each machine (both machines must run
+the same version; see [files.md "Updates"](files.md#updates)). Superseded: the manual steps below
+(they still work, e.g. for a build from source):
+
 Linux, release download: `chmod +x synergy-tools-linux-x86_64 && ./synergy-tools-linux-x86_64 install`.
 Linux, built from source: `cargo build --release && target/release/synergy-tools install`. Then Quit the
 tray and start it again (`~/.local/bin/synergy-tools`; `~/.local/bin` is on PATH on most desktops).
@@ -348,7 +352,7 @@ on Windows and `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools â€
 `~/.local/bin/synergy-tools` (usually on PATH). `uninstall` on Windows also unmutes the speakers if
 the tray had muted them.
 
-`synergy-tools --version` prints the version.
+`synergy-tools --version` prints the version and the git short hash it was built from.
 
 `--log <file>` is for running without a terminal (for unattended runs). It writes
 the status lines to that file instead of stderr, appending; when the file grows past 1 MiB
@@ -394,7 +398,9 @@ TCP 24851 for the presence ping; see [files.md](files.md#macos).
 
 ## Releases and CI
 
-One `v*` tag publishes the Linux, Windows and macOS binaries to a GitHub Release; see the README "CI and releases".
+One `v*` tag publishes the Linux, Windows and macOS binaries to a GitHub Release, and every
+program-changing push to `main` publishes them to the rolling `latest` release that
+`synergy-tools update` uses; see the README "CI and releases".
 
 Superseded: per-tool tags `audio-v*` / `dragndrop-v*` and their workflows; one `v*` tag now (`.github/workflows/release.yml`).
 

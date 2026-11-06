@@ -1,20 +1,33 @@
 name: Release
 
+# A `v*` tag publishes a versioned GitHub Release. Every push to main that changes the program
+# publishes the same three builds to the rolling `latest` release (what `synergy-tools update`
+# downloads). Both build once, with ci.yml (which skips main pushes so main isn't built twice).
 on:
-  push: { tags: ['v*'] }
+  push:
+    tags: ['v*']
+    branches: [main]
+    # Only when the program changed (docs pushes don't). GitHub ignores paths for tag pushes.
+    paths: [src/**, build.rs, Cargo.toml, Cargo.lock, .github/workflows/**]
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true   # on main only the newest build matters; each tag is its own group
 
 jobs:
   build:
     uses: ./.github/workflows/ci.yml
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions: { contents: write }
+    env: { GH_TOKEN: '${{ github.token }}' }
     steps:
       - uses: actions/checkout@v7
-      - run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
       - uses: actions/download-artifact@v8
         with: { path: dist }
       - run: |
@@ -22,5 +35,18 @@ jobs:
           mv dist/synergy-tools-linux-x86_64/synergy-tools out/synergy-tools-linux-x86_64
           mv dist/synergy-tools-windows-x86_64/synergy-tools.exe out/synergy-tools-windows-x86_64.exe
           mv dist/synergy-tools-macos-universal/synergy-tools out/synergy-tools-macos-universal
-          gh release create "$GITHUB_REF_NAME" --generate-notes out/*
-        env: { GH_TOKEN: '${{ github.token }}' }
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes out/*
+      - name: Publish to the rolling `latest` release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          title="latest ($(git rev-parse --short HEAD))"
+          notes="$(git log -1 --format='%h %s')"
+          git tag -f latest
+          git push -f origin refs/tags/latest
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --title "$title" --notes "$notes"
+          else
+            gh release create latest --title "$title" --notes "$notes"
+          fi
+          gh release upload latest out/* --clobber
