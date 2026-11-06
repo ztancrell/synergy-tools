@@ -6,10 +6,11 @@ and mouse between computers but not audio or file drag-and-drop.
 | Tool | What it does | Platforms |
 |------|--------------|-----------|
 | [audio](docs/audio.md) (`synergy-tools audio`) | Streams one machine's audio to another over the LAN (e.g. Windows game audio to Linux headphones). | Windows or macOS sender → Linux receiver |
-| [files](docs/files.md) (`synergy-tools`) | Sends files between the two machines: drop window, tray, `synergy-tools files send` (right-click Send To entries come back with phase 3's installer). | Windows, macOS, Linux (any pair) |
+| [files](docs/files.md) (`synergy-tools`) | Sends files between the two machines: drop window, tray, `synergy-tools files send` (Linux right-click "Send to other PC" via `synergy-tools install`; Windows and macOS entries come later in phase 3). | Windows, macOS, Linux (any pair) |
 
 Run `synergy-tools` with no arguments for the tray (one icon for both tools; on macOS it sits in
-the menu bar, with no Dock icon). Its menu:
+the menu bar, with no Dock icon). On Linux, `synergy-tools install` copies it to `~/.local/bin`,
+starts it at login and adds the right-click entries ([docs/files.md](docs/files.md#install)). Its menu:
 
 ```
 Online: <names> | No partner online | Not paired

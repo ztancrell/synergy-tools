@@ -45,8 +45,18 @@ that PC as online and won't stream to it.
 
 ## Download and install
 
-Superseded: installers, autostart and releases come in phase 3; build from source for now
-([Build](#build)).
+On Linux the receiver is the tray: `synergy-tools install` (see
+[files.md "Install"](files.md#install)) starts it at desktop login, and the tray plays what the
+partner streams. There is no systemd receiver service any more; `install` removes the old
+`synergy-audio` one. Windows and macOS installers and release downloads come later in phase 3;
+build from source for now ([Build](#build)).
+
+Headless (no desktop): `synergy-tools audio receive` is not installed by `install`. Run it
+yourself, for example from your own systemd user unit, and never together with the tray (both
+want UDP 24850).
+
+Superseded: the systemd receiver service from the old synergy-audio installer; the tray replaces
+it (src/install.rs).
 
 ### macOS (sender)
 
@@ -65,8 +75,8 @@ again. Without it Linux gets silence while the Mac says streaming.
 What this is built and tested on:
 
 - **Main machine: CachyOS Linux desktop.** Wired Ethernet (`192.168.254.90`), headphones
-  plugged in. Synergy 3 server: its keyboard and mouse control both machines. Runs
-  `synergy-tools audio receive`.
+  plugged in. Synergy 3 server: its keyboard and mouse control both machines. Runs the
+  `synergy-tools` tray as the receiver (set up by `synergy-tools install`).
 - **Gaming machine: MacBook Pro 2019** (Intel i9, Radeon Pro 5500M 8 GB, 32 GB RAM, 1 TB)
   running **Windows 10 through Boot Camp** (with FlexTPM), on Wi-Fi. Synergy 3 client. Plays
   **Battlefield 6**. Runs `synergy-tools audio send`.
@@ -158,9 +168,12 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 ### Every update after that, autostart
 
+Linux: download or build the new binary, run `synergy-tools install` again, then Quit the tray
+and start it again (`~/.local/bin/synergy-tools`). Windows: rebuild and copy by hand as in
+steps 5-8 until its installer comes later in phase 3.
+
 Superseded: dev scripts, Linux and Windows autostart and the update script are gone; the
-tray starts audio by itself and installers come in phase 3. Rebuild and copy by
-hand as in steps 5-8.
+tray starts audio by itself and `synergy-tools install` (src/install.rs) sets up Linux.
 
 ### Auto-mute of the speakers
 

@@ -12,7 +12,39 @@ The Linux target is Openbox + tint2 on X11 with Thunar and dunst. KDE and GNOME 
 
 ## Install
 
-Superseded: install and autostart scripts were removed; phase 3 adds an installer for synergy-tools. Until then run the binary by hand.
+### Linux
+
+Build the binary (see "Build from source"; release downloads come later in phase 3), then:
+
+```sh
+chmod +x synergy-tools
+./synergy-tools install
+```
+
+`install` (code: `src/install.rs`):
+
+- copies the program to `~/.local/bin/synergy-tools`;
+- starts it at desktop login: `~/.config/autostart/synergy-tools.desktop` (XDG autostart). On
+  Openbox with `~/.config/openbox/autostart` but no `openbox-xdg-autostart` helper it adds the
+  line `'<path>' & # synergy-tools` to that file instead (and removes the XDG file), so the tray
+  never starts twice;
+- adds "Send to other PC" to the right-click menus of Thunar
+  (`~/.local/share/Thunar/sendto/synergy-tools.desktop`), Dolphin
+  (`~/.local/share/kio/servicemenus/synergy-tools.desktop`) and Nautilus
+  (`~/.local/share/nautilus/scripts/Send to other PC`), each running `synergy-tools files send`;
+- removes the old programs: the `synergy-audio` systemd user service, the `synergy-dragndrop`
+  autostart entries (XDG file and Openbox line) and right-click entries, the old binaries in
+  `~/.local/bin`, and their old config folders `~/.config/synergy-audio` and
+  `~/.config/synergy-dragndrop` (their pairings don't work with synergy-tools: pair again);
+- starts the tray. If a tray already runs it says so instead: Quit that one from its menu and
+  start `~/.local/bin/synergy-tools`.
+
+To update, get the new binary and run `./synergy-tools install` again (it is safe to repeat), then
+Quit the running tray and start it again. Your pairings (`~/.config/synergy-tools`) are kept.
+
+Superseded: the per-tool install-autostart.sh scripts; synergy-tools install replaces them (src/install.rs).
+
+Windows and macOS: run the binary by hand for now (below); their `install` comes later in phase 3.
 
 The program needs the GTK 3 runtime and the Ayatana appindicator library for the tray icon on Linux:
 Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3` and
@@ -84,9 +116,11 @@ Script Editor in System Settings → Notifications; allow them there if none app
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry
   stays. On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. macOS has
   no minimize button (see "macOS" above).
-- **Right-click:** the Send To entries (Windows Explorer, Thunar, Dolphin, Nautilus) come back
-  with phase 3's installer. Until then use the drop window or `synergy-tools files send`.
-  Superseded: they came from the removed install scripts.
+- **Right-click:** on Linux, `synergy-tools install` adds "Send to other PC" to Thunar
+  (Send To), Dolphin and Nautilus (Scripts); it sends to the online partner like
+  `synergy-tools files send`. The Windows Explorer and Finder entries come with phase 3's
+  installer; until then use the drop window or `synergy-tools files send` there.
+  Superseded: the entries came from the removed install scripts; see [Install](#install).
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
   out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
@@ -111,6 +145,9 @@ synergy-tools unpair <name>           forget a partner
 synergy-tools files send [--to <name>] <file>...
                                       send files to the online partner (--to if several are online)
 synergy-tools files listen            receive files without the tray app
+synergy-tools install                 copy to a per-user folder, start at login, add the "Send to other PC"
+                                      entry, remove the old synergy-audio/synergy-dragndrop (Linux for now)
+synergy-tools uninstall               undo install (pairings are kept)
 synergy-tools --version
 ```
 
@@ -182,7 +219,11 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 
 ## Uninstall
 
-Superseded: uninstall scripts were removed along with the installers; delete the binary and, if you want, the config folder.
+Linux: `synergy-tools uninstall` stops the tray and removes what `install` added (the binary in
+`~/.local/bin`, the autostart entry, the three "Send to other PC" entries). Pairings are kept;
+delete `~/.config/synergy-tools` to forget them.
+
+Superseded: the per-tool uninstall scripts; synergy-tools uninstall replaces them (src/install.rs).
 
 ## Build from source
 

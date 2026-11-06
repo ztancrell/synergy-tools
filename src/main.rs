@@ -3,6 +3,7 @@
 
 mod audio;
 mod config;
+mod install;
 mod tray;
 mod notify;
 mod pair;
@@ -33,6 +34,9 @@ const USAGE: &str = "usage:
   synergy-tools audio receive [--buffer-ms N]
                                         play a partner's sound (default buffer 20 ms)
   synergy-tools audio unmute            undo the sender's auto-mute after it was killed
+  synergy-tools install                 copy to a per-user folder, start at login, add the \"Send to other PC\"
+                                        entry, remove the old synergy-audio/synergy-dragndrop
+  synergy-tools uninstall               undo install (pairings are kept)
   synergy-tools --version";
 
 fn downloads() -> Result<PathBuf, String> {
@@ -163,6 +167,8 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
             _ => return Err(format!("--buffer-ms needs a positive integer, got {n:?}")),
         },
         ["audio", "unmute"] => audio::mute::restore(),
+        ["install"] => install::install()?,
+        ["uninstall"] => install::uninstall()?,
         _ => return Err(USAGE.into()),
     }
     Ok(())
