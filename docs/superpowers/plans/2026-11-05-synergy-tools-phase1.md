@@ -36,7 +36,7 @@
 5. **Pairing replaces an entry with the same (name, os)**, otherwise appends. Name and OS are exchanged during pairing and bound into the SPAKE2 confirmations.
 6. **Presence = an authenticated ping** (`H` + id + Noise handshake on TCP 24851) every 5 s from the tray. Audio picks its target from it: the first online partner whose os is `linux`. A headless `audio receive` does not answer pings, so it only works with `audio send` from the CLI.
 7. **Stop is a last-writer-wins register** `(stopped, epoch)` carried in every keepalive and ack; the higher epoch wins, a tie goes to "stopped". Start or Stop on either side bumps the epoch. A restarted side starts at epoch 0, so if the other side is still stopped it adopts that stop; it streams again only when both sides restarted or someone presses Start.
-8. **Picker** = a context menu popped up on the drop window (muda `ContextMenu`) listing online partners. The CLI `files send` picks with `--to <name>`; with several online and no `--to` it fails and names them. Windows "Send to" (which has no terminal) gets that error as a notification; a per-partner Send To entry is for phase 3's installer.
+8. **Picker** = a context menu popped up on the drop window (muda `ContextMenu`) listing online partners. The CLI `files send` picks with `--to <name>`; with several online and no `--to` it fails and names them. Windows "Send to" (which has no terminal) gets that error as a notification; a per-partner Send To entry is for phase 3's installer. Superseded: one "Send to other PC" entry; see src/install.rs and the phase 3 plan.
 
 ## Review Focus
 
