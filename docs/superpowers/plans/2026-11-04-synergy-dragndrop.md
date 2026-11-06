@@ -1,3 +1,5 @@
+Superseded: synergy-dragndrop is now part of synergy-tools; see docs/superpowers/specs/2026-11-05-unified-tray-design.md and src/.
+
 # synergy-dragndrop Implementation Plan
 
 > Superseded: this plan predates the move into the synergy-tools monorepo. The code now lives in

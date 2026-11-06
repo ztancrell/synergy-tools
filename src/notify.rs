@@ -3,7 +3,7 @@
 use crate::transfer::Received;
 use std::path::Path;
 
-const TITLE: &str = "synergy-dragndrop";
+const TITLE: &str = "synergy-tools";
 
 pub fn received_text(n: usize, from: &str) -> String {
     format!("{n} file{} received from {from}", if n == 1 { "" } else { "s" })

@@ -30,10 +30,10 @@ pub fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
 }
 
 pub fn config_dir() -> Result<PathBuf, String> {
-    dirs::config_dir().map(|d| d.join("synergy-dragndrop")).ok_or_else(|| "no config directory on this system".to_string())
+    dirs::config_dir().map(|d| d.join("synergy-tools")).ok_or_else(|| "no config directory on this system".to_string())
 }
 
-const NOT_PAIRED: &str = "not paired yet: run `synergy-dragndrop pair` on one PC, then `synergy-dragndrop pair <host> <code>` on the other";
+const NOT_PAIRED: &str = "not paired yet: run `synergy-tools pair` on one PC, then `synergy-tools pair <host> <code>` on the other";
 
 pub fn load_peer_from(dir: &Path) -> Result<Peer, String> {
     let path = dir.join("peer");
@@ -41,9 +41,9 @@ pub fn load_peer_from(dir: &Path) -> Result<Peer, String> {
     match text.split_whitespace().collect::<Vec<_>>()[..] {
         [host, secret] => match unhex(secret) {
             Some(secret) => Ok(Peer { host: host.to_string(), secret }),
-            None => Err(format!("{} is damaged: run `synergy-dragndrop pair` again", path.display())),
+            None => Err(format!("{} is damaged: run `synergy-tools pair` again", path.display())),
         },
-        _ => Err(format!("{} is damaged: run `synergy-dragndrop pair` again", path.display())),
+        _ => Err(format!("{} is damaged: run `synergy-tools pair` again", path.display())),
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn missing_peer_says_how_to_pair() {
-        assert!(load_peer_from(&tmp()).unwrap_err().contains("synergy-dragndrop pair"));
+        assert!(load_peer_from(&tmp()).unwrap_err().contains("synergy-tools pair"));
     }
 
     #[test]

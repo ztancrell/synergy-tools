@@ -1,3 +1,5 @@
+Superseded: synergy-dragndrop is now part of synergy-tools; see docs/superpowers/specs/2026-11-05-unified-tray-design.md and src/.
+
 # synergy-dragndrop — design
 
 ## The idea

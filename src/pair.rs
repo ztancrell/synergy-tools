@@ -46,7 +46,7 @@ pub fn parse_code(s: &str) -> Result<String, String> {
     if d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()) {
         Ok(d)
     } else {
-        Err(format!("the code is 8 digits as shown by `synergy-dragndrop pair`, like 1234-5678; got {s:?}"))
+        Err(format!("the code is 8 digits as shown by `synergy-tools pair`, like 1234-5678; got {s:?}"))
     }
 }
 
