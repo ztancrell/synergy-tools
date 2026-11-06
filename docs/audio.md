@@ -48,7 +48,10 @@ that PC as online and won't stream to it.
 On Linux the receiver is the tray: `synergy-tools install` (see
 [files.md "Install"](files.md#install)) starts it at desktop login, and the tray plays what the
 partner streams. There is no systemd receiver service any more; `install` removes the old
-`synergy-audio` one. Windows and macOS installers and release downloads come later in phase 3;
+`synergy-audio` one. On Windows the sender is the tray too: run `synergy-tools.exe install`
+(same command, see [files.md "Install"](files.md#windows)); it first runs the old
+`synergy-audio.exe unmute` if present, then removes the old `synergy-audio` scheduled task, and
+starts the tray at login. The macOS installer and release downloads come later in phase 3;
 build from source for now ([Build](#build)).
 
 Headless (no desktop): `synergy-tools audio receive` is not installed by `install`. Run it
@@ -169,11 +172,12 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 ### Every update after that, autostart
 
 Linux: download or build the new binary, run `synergy-tools install` again, then Quit the tray
-and start it again (`~/.local/bin/synergy-tools`). Windows: rebuild and copy by hand as in
-steps 5-8 until its installer comes later in phase 3.
+and start it again (`~/.local/bin/synergy-tools`). Windows: copy the new `synergy-tools.exe`
+over as in steps 5-8, run `.\synergy-tools.exe install` again, then Quit the tray and start it
+again (from the Start menu search or `%LOCALAPPDATA%\Programs\synergy-tools`).
 
 Superseded: dev scripts, Linux and Windows autostart and the update script are gone; the
-tray starts audio by itself and `synergy-tools install` (src/install.rs) sets up Linux.
+tray starts audio by itself and `synergy-tools install` (src/install.rs) sets up Linux and Windows.
 
 ### Auto-mute of the speakers
 
@@ -367,8 +371,9 @@ sudo ufw allow 24850/udp
 sudo ufw allow 24851/tcp
 ```
 
-Windows and macOS only send, so Windows normally needs no firewall change (if it asks about
-network access the first time you run it, allow it on private networks). The Mac needs inbound
+Windows and macOS only send, so Windows needs no firewall change for audio (`install` adds the
+`synergy-tools (TCP 24851)` rule for file transfer and presence; if it asks about network access
+the first time you run it, allow it on private networks). The Mac needs inbound
 TCP 24851 for the presence ping; see [files.md](files.md#macos).
 
 ## Releases and CI

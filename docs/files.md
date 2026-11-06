@@ -44,19 +44,51 @@ Quit the running tray and start it again. Your pairings (`~/.config/synergy-tool
 
 Superseded: the per-tool install-autostart.sh scripts; synergy-tools install replaces them (src/install.rs).
 
-Windows and macOS: run the binary by hand for now (below); their `install` comes later in phase 3.
-
 The program needs the GTK 3 runtime and the Ayatana appindicator library for the tray icon on Linux:
 Debian/Ubuntu `libgtk-3-0` and `libayatana-appindicator3-1`; Arch/CachyOS `gtk3` and
 `libayatana-appindicator`.
+
+### Windows
+
+Download the Windows program (see "Build from source" until release downloads exist), then in
+PowerShell, in the folder it is in:
+
+```powershell
+.\synergy-tools.exe install
+```
+
+Windows SmartScreen may say "Windows protected your PC" (the program is unsigned): click
+**More info**, then **Run anyway**. `install` (code: `src/install.rs`) does this, in this order:
+
+- removes the old programs: runs the old `synergy-audio.exe unmute` if it exists; stops and
+  unregisters the scheduled tasks `synergy-audio` and `synergy-dragndrop` and kills those
+  processes; deletes `%LOCALAPPDATA%\synergy-audio`, `%LOCALAPPDATA%\synergy-dragndrop`,
+  `%APPDATA%\synergy-audio`, `%APPDATA%\synergy-dragndrop` and the old Send To entry (their
+  pairings don't work with synergy-tools: pair again); then tries to remove the old firewall rule
+  `synergy-dragndrop (TCP 24851)` and add `synergy-tools (TCP 24851)` (inbound TCP 24851, private
+  and public networks). That needs administrator rights and `install` doesn't ask for them: if it
+  fails, install still succeeds and prints one command to run in an administrator PowerShell;
+- copies the program to `%LOCALAPPDATA%\Programs\synergy-tools\synergy-tools.exe`;
+- starts it at login: the value `synergy-tools` under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator, no scheduled task);
+- adds "Send to other PC" to the Explorer Send To menu
+  (`%APPDATA%\Microsoft\Windows\SendTo\Send to other PC.lnk`, running `synergy-tools files send`);
+- starts the tray. If a tray already runs it says so instead: Quit that one from its menu and
+  start the installed program.
+
+To update, run the new program's `install` again (safe to repeat; the running tray keeps working
+until you Quit it and start it again). Your pairings (`%APPDATA%\synergy-tools`) are kept.
+
+Superseded: the old scheduled tasks and manual copy; synergy-tools install replaces them
+(src/install.rs).
 
 ### macOS
 
 Run it from Terminal: `chmod +x synergy-tools && xattr -d com.apple.quarantine synergy-tools && ./synergy-tools`,
 or `nohup ./synergy-tools >/dev/null 2>&1 &` to be able to close the Terminal window. The icon sits
 in the menu bar, with no Dock icon; the drop window has no minimize button. If the macOS firewall
-asks, allow incoming connections (needed for TCP 24851). A Finder send entry comes with phase 3's
-installer; until then drop files on the window or use `synergy-tools files send`.
+asks, allow incoming connections (needed for TCP 24851). `install` for macOS and its Finder send
+entry come later in phase 3; until then drop files on the window or use `synergy-tools files send`.
 
 The first time a file arrives, macOS may ask "Terminal would like to access files in your
 Downloads folder". Allow it: otherwise receives fail with "Operation not permitted" and the
@@ -116,10 +148,11 @@ Script Editor in System Settings → Notifications; allow them there if none app
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry
   stays. On Windows and on Linux/X11 (e.g. Openbox) the window stays on top by itself. macOS has
   no minimize button (see "macOS" above).
-- **Right-click:** on Linux, `synergy-tools install` adds "Send to other PC" to Thunar
-  (Send To), Dolphin and Nautilus (Scripts); it sends to the online partner like
-  `synergy-tools files send`. The Windows Explorer and Finder entries come with phase 3's
-  installer; until then use the drop window or `synergy-tools files send` there.
+- **Right-click:** `synergy-tools install` adds "Send to other PC" to Thunar
+  (Send To), Dolphin and Nautilus (Scripts) on Linux, and to the Explorer Send To submenu on
+  Windows (right-click a file > Show more options on Windows 11 > Send to); it sends to the online
+  partner like `synergy-tools files send`. The Finder entry comes later in phase 3; until then
+  use the drop window or `synergy-tools files send` there.
   Superseded: the entries came from the removed install scripts; see [Install](#install).
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
@@ -146,7 +179,7 @@ synergy-tools files send [--to <name>] <file>...
                                       send files to the online partner (--to if several are online)
 synergy-tools files listen            receive files without the tray app
 synergy-tools install                 copy to a per-user folder, start at login, add the "Send to other PC"
-                                      entry, remove the old synergy-audio/synergy-dragndrop (Linux for now)
+                                      entry, remove the old synergy-audio/synergy-dragndrop (Linux and Windows for now)
 synergy-tools uninstall               undo install (pairings are kept)
 synergy-tools --version
 ```
@@ -196,7 +229,9 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 
 - **`not sent: other PC unreachable`** (after 3 seconds): the other PC is off, the address in the
   pairing is out of date (`synergy-tools partner <name> <new address>`; a fixed address for it in your
-  router avoids this), or its firewall blocks TCP 24851. Open TCP 24851 there (on Windows, `New-NetFirewallRule -DisplayName 'synergy-tools (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Profile Private,Public -Action Allow` as administrator).
+  router avoids this), or its firewall blocks TCP 24851. Open TCP 24851 there (on Windows `install` adds the rule
+  `synergy-tools (TCP 24851)` itself when run as administrator, or prints the command; by hand:
+  `New-NetFirewallRule -DisplayName 'synergy-tools (TCP 24851)' -Direction Inbound -Protocol TCP -LocalPort 24851 -Profile Private,Public -Action Allow` as administrator).
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: pair again; pairing with the same PC (same name and OS) replaces its
   entry, no unpair needed.
@@ -222,6 +257,12 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 Linux: `synergy-tools uninstall` stops the tray and removes what `install` added (the binary in
 `~/.local/bin`, the autostart entry, the three "Send to other PC" entries). Pairings are kept;
 delete `~/.config/synergy-tools` to forget them.
+
+Windows: `.\synergy-tools.exe uninstall` stops the tray and removes the Run value, the Send To
+entry and the firewall rule `synergy-tools (TCP 24851)` (that one needs administrator rights,
+otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-tools`. Run from
+the installed program itself, it can't delete its own folder: delete the folder by hand.
+Pairings are kept; delete `%APPDATA%\synergy-tools` to forget them.
 
 Superseded: the per-tool uninstall scripts; synergy-tools uninstall replaces them (src/install.rs).
 

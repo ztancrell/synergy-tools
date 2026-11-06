@@ -10,10 +10,8 @@ pub enum Step {
     /// Old-program cleanup: failure ignored.
     Try(Vec<String>),
     /// Failure fails install/uninstall.
-    #[allow(dead_code)] // no OS uses it yet
     Run(Vec<String>),
     /// Failure -> a note with the command to run as administrator.
-    #[allow(dead_code)] // Windows (Task 2)
     Admin(Vec<String>),
     /// File or folder; missing is fine; failure -> note.
     Delete(PathBuf),
@@ -27,15 +25,17 @@ pub enum Step {
     Openbox(PathBuf, &'static str, Option<String>),
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct Places {
     pub exe: PathBuf,
     pub home: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
+    /// `%LOCALAPPDATA%` on Windows.
+    pub local: PathBuf,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn places() -> Result<Places, String> {
     let need = |d: Option<PathBuf>, what: &str| d.ok_or_else(|| format!("can't find your {what} folder"));
     Ok(Places {
@@ -43,6 +43,7 @@ fn places() -> Result<Places, String> {
         home: need(dirs::home_dir(), "home")?,
         config: need(dirs::config_dir(), "config")?,
         data: need(dirs::data_dir(), "data")?,
+        local: need(dirs::data_local_dir(), "local data")?,
     })
 }
 
@@ -117,7 +118,7 @@ fn copy(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// Ok(notes for the user).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn apply(steps: &[Step], run: &mut dyn FnMut(&[String]) -> bool) -> Result<Vec<String>, String> {
     let mut notes = vec![];
     for s in steps {
@@ -142,7 +143,12 @@ pub fn apply(steps: &[Step], run: &mut dyn FnMut(&[String]) -> bool) -> Result<V
             }
             Step::Write(p, t) => write(p, t, false)?,
             Step::WriteExec(p, t) => write(p, t, true)?,
-            Step::Copy(a, b) => copy(a, b)?,
+            Step::Copy(a, b) => {
+                copy(a, b)?;
+                // Don't carry the Mark of the Web of a downloaded exe into the install.
+                #[cfg(windows)]
+                let _ = fs::remove_file(with_ext(b, ":Zone.Identifier"));
+            }
             Step::Openbox(p, marker, add) => {
                 let text = match fs::read_to_string(p) {
                     Ok(t) => t,
@@ -273,27 +279,127 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
     v
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const FIREWALL_RULE: &str = "synergy-tools (TCP 24851)";
+
+/// PowerShell single-quoted string.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps(script: String) -> Vec<String> {
+    cmd(&["powershell", "-NoProfile", "-NonInteractive", "-Command", &script])
+}
+
+/// Remove the old dragndrop rule, add ours unless present. Never contains `"` (it is printed as a command).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn firewall_ps(exe: &Path) -> String {
+    let rule = |n: &str| format!("Get-NetFirewallRule -DisplayName '{n} (TCP 24851)' -ErrorAction SilentlyContinue");
+    format!(
+        "$ErrorActionPreference='Stop'; {} | Remove-NetFirewallRule; if (-not ({})) {{ New-NetFirewallRule \
+         -DisplayName '{FIREWALL_RULE}' -Direction Inbound -Protocol TCP -LocalPort {} -Program {} \
+         -Profile Private,Public -Action Allow | Out-Null }}",
+        rule("synergy-dragndrop"),
+        rule("synergy-tools"),
+        crate::PORT,
+        ps_quote(&exe.display().to_string())
+    )
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sendto_ps(lnk: &Path, exe: &Path) -> String {
+    format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut({}); $s.TargetPath={}; $s.Arguments='files send'; $s.Save()",
+        ps_quote(&lnk.display().to_string()),
+        ps_quote(&exe.display().to_string())
+    )
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_dir(p: &Places) -> PathBuf {
+    p.local.join("Programs").join("synergy-tools")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_lnk(p: &Places) -> PathBuf {
+    p.config.join("Microsoft").join("Windows").join("SendTo").join("Send to other PC.lnk")
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn windows(p: &Places, install: bool) -> Vec<Step> {
+    use Step::*;
+    let (dir, lnk) = (windows_dir(p), windows_lnk(p));
+    let exe_t = dir.join("synergy-tools.exe");
+    let s = |p: &Path| p.display().to_string();
+    if !install {
+        return vec![
+            Try(cmd(&[
+                "taskkill",
+                "/F",
+                "/FI",
+                "IMAGENAME eq synergy-tools.exe",
+                "/FI",
+                &format!("PID ne {}", std::process::id()),
+            ])),
+            Try(cmd(&["reg", "delete", RUN_KEY, "/v", "synergy-tools", "/f"])),
+            Delete(lnk),
+            Admin(ps(format!(
+                "$ErrorActionPreference='Stop'; Get-NetFirewallRule -DisplayName '{FIREWALL_RULE}' \
+                 -ErrorAction SilentlyContinue | Remove-NetFirewallRule"
+            ))),
+            Delete(dir),
+        ];
+    }
+    let old = |n: &str| p.local.join(n);
+    let task = |op: &[&str], n: &str| {
+        let mut c = vec!["schtasks"];
+        c.extend_from_slice(op);
+        c.extend_from_slice(&["/TN", n]);
+        Try(cmd(&c))
+    };
+    vec![
+        Try(cmd(&[&s(&old("synergy-audio").join("synergy-audio.exe")), "unmute"])),
+        task(&["/End"], "synergy-audio"),
+        Try(cmd(&["schtasks", "/Delete", "/TN", "synergy-audio", "/F"])),
+        task(&["/End"], "synergy-dragndrop"),
+        Try(cmd(&["schtasks", "/Delete", "/TN", "synergy-dragndrop", "/F"])),
+        Try(cmd(&["taskkill", "/F", "/IM", "synergy-audio.exe"])),
+        Try(cmd(&["taskkill", "/F", "/IM", "synergy-dragndrop.exe"])),
+        Delete(old("synergy-audio")),
+        Delete(old("synergy-dragndrop")),
+        Delete(p.config.join("synergy-audio")),
+        Delete(p.config.join("synergy-dragndrop")),
+        Delete(lnk.clone()),
+        Admin(ps(firewall_ps(&exe_t))),
+        Copy(p.exe.clone(), exe_t.clone()),
+        Run(cmd(&["reg", "add", RUN_KEY, "/v", "synergy-tools", "/t", "REG_SZ", "/d", &format!("\"{}\"", s(&exe_t)), "/f"])),
+        Run(ps(sendto_ps(&lnk, &exe_t))),
+    ]
+}
+
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub fn installed_exe(p: &Places) -> PathBuf {
+    #[cfg(windows)]
+    return windows_dir(p).join("synergy-tools.exe");
+    #[cfg(not(windows))]
     p.home.join(".local/bin/synergy-tools")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn run_cmd(c: &[String]) -> bool {
     use std::process::{Command, Stdio};
-    Command::new(&c[0])
-        .args(&c[1..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let mut k = Command::new(&c[0]);
+    k.args(&c[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut k, 0x0800_0000); // CREATE_NO_WINDOW
+    k.status().is_ok_and(|s| s.success())
 }
 
 /// Start the installed tray unless one already holds TCP `PORT`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn start_tray(bin: &Path) {
-    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     if std::net::TcpListener::bind(("0.0.0.0", crate::PORT)).is_err() {
         println!(
@@ -302,14 +408,14 @@ fn start_tray(bin: &Path) {
         );
         return;
     }
+    let mut k = Command::new(bin);
+    k.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // Own process group: closing the terminal doesn't take the tray with it.
-    let r = Command::new(bin)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn();
-    match r {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut k, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut k, 0x0000_0208); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    match k.spawn() {
         Ok(_) => println!("started {}", bin.display()),
         Err(e) => println!("couldn't start {}: {e}", bin.display()),
     }
@@ -350,12 +456,38 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn install() -> Result<(), String> {
+    let p = places()?;
+    let notes = apply(&windows(&p, true), &mut run_cmd)?;
+    let exe = installed_exe(&p);
+    println!("installed {}", exe.display());
+    println!("autostart at login: {RUN_KEY}");
+    println!("\"Send to other PC\" added to the Explorer Send to menu");
+    for n in notes {
+        println!("{n}");
+    }
+    start_tray(&exe);
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn uninstall() -> Result<(), String> {
+    let p = places()?;
+    let notes = apply(&windows(&p, false), &mut run_cmd)?;
+    println!("uninstalled {} (pairings kept in {})", installed_exe(&p).display(), p.config.join("synergy-tools").display());
+    for n in notes {
+        println!("{n}");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn install() -> Result<(), String> {
     Err("install is not supported on this OS yet".into())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn uninstall() -> Result<(), String> {
     Err("uninstall is not supported on this OS yet".into())
 }
@@ -375,7 +507,7 @@ mod tests {
 
     fn places_in(t: &Path) -> Places {
         let home = t.join("home");
-        Places { exe: t.join("exe"), config: home.join(".config"), data: home.join(".local/share"), home }
+        Places { exe: t.join("exe"), config: home.join(".config"), data: home.join(".local/share"), local: home.join("Local"), home }
     }
 
     fn ok(_: &[String]) -> bool {
@@ -489,6 +621,92 @@ mod tests {
             deleted.sort();
             assert_eq!(added, deleted, "openbox={b}");
         }
+    }
+
+    fn wp() -> (Places, PathBuf, PathBuf) {
+        let p = places_in(Path::new("/h"));
+        let dir = p.local.join("Programs").join("synergy-tools");
+        (p, dir.join("synergy-tools.exe"), dir)
+    }
+
+    #[test]
+    fn windows_cleanup_in_spec_order() {
+        let (p, exe_t, _) = wp();
+        let (l, c) = (&p.local, &p.config);
+        let v = |a: &[&str]| cmd(a);
+        let want = vec![
+            Try(v(&[&s(&l.join("synergy-audio").join("synergy-audio.exe")), "unmute"])),
+            Try(v(&["schtasks", "/End", "/TN", "synergy-audio"])),
+            Try(v(&["schtasks", "/Delete", "/TN", "synergy-audio", "/F"])),
+            Try(v(&["schtasks", "/End", "/TN", "synergy-dragndrop"])),
+            Try(v(&["schtasks", "/Delete", "/TN", "synergy-dragndrop", "/F"])),
+            Try(v(&["taskkill", "/F", "/IM", "synergy-audio.exe"])),
+            Try(v(&["taskkill", "/F", "/IM", "synergy-dragndrop.exe"])),
+            Delete(l.join("synergy-audio")),
+            Delete(l.join("synergy-dragndrop")),
+            Delete(c.join("synergy-audio")),
+            Delete(c.join("synergy-dragndrop")),
+            Delete(windows_lnk(&p)),
+            Admin(ps(firewall_ps(&exe_t))),
+        ];
+        assert_eq!(&windows(&p, true)[..13], &want[..]);
+        let lnk = s(&windows_lnk(&p));
+        assert!(lnk.ends_with("Send to other PC.lnk") && lnk.contains("SendTo"));
+    }
+
+    #[test]
+    fn windows_adds() {
+        let (p, exe_t, _) = wp();
+        let v = windows(&p, true);
+        assert_eq!(v.len(), 16);
+        assert_eq!(v[13], Copy(p.exe.clone(), exe_t.clone()));
+        let Run(reg) = &v[14] else { panic!("{:?}", v[14]) };
+        assert_eq!(&reg[..7], &cmd(&["reg", "add", RUN_KEY, "/v", "synergy-tools", "/t", "REG_SZ"])[..]);
+        assert_eq!(reg[7], "/d");
+        assert_eq!(reg[8], format!("\"{}\"", s(&exe_t)));
+        assert_eq!(reg[9], "/f");
+        let Run(c) = &v[15] else { panic!("{:?}", v[15]) };
+        assert_eq!(&c[..4], &cmd(&["powershell", "-NoProfile", "-NonInteractive", "-Command"])[..]);
+        assert!(c[4].contains("Send to other PC.lnk"));
+        assert!(c[4].contains("$s.Arguments='files send'"));
+        assert!(c[4].contains(&format!("TargetPath={}", ps_quote(&s(&exe_t)))));
+    }
+
+    #[test]
+    fn ps_quote_doubles_single_quotes() {
+        assert_eq!(ps_quote(r"C:\Users\Zach O'Brien\x.exe"), r"'C:\Users\Zach O''Brien\x.exe'");
+    }
+
+    #[test]
+    fn firewall_ps_has_no_double_quotes() {
+        let f = firewall_ps(Path::new(r"C:\Users\Zach O'Brien\x.exe"));
+        assert!(!f.contains('"'), "{f}");
+        for want in [
+            "-LocalPort 24851",
+            "-Profile Private,Public",
+            "'synergy-dragndrop (TCP 24851)'",
+            "'synergy-tools (TCP 24851)'",
+            r"-Program 'C:\Users\Zach O''Brien\x.exe'",
+            "$ErrorActionPreference='Stop'; ",
+        ] {
+            assert!(f.contains(want), "{want} in {f}");
+        }
+        assert!(f.find("Remove-NetFirewallRule") < f.find("New-NetFirewallRule"));
+    }
+
+    #[test]
+    fn windows_uninstall_reverses_install() {
+        let (p, exe_t, dir) = wp();
+        let (i, u) = (windows(&p, true), windows(&p, false));
+        assert!(exe_t.starts_with(&dir));
+        assert!(i.iter().any(|st| matches!(st, Copy(_, to) if *to == exe_t)));
+        assert!(u.contains(&Delete(dir)));
+        assert!(i.contains(&Delete(windows_lnk(&p))) && u.contains(&Delete(windows_lnk(&p))));
+        let add = |st: &Step| matches!(st, Run(c) if c[..2] == ["reg", "add"] && c[2..5] == [RUN_KEY, "/v", "synergy-tools"]);
+        let del = |st: &Step| matches!(st, Try(c) if c[..2] == ["reg", "delete"] && c[2..5] == [RUN_KEY, "/v", "synergy-tools"]);
+        assert!(i.iter().any(add) && u.iter().any(del));
+        assert!(matches!(&u[0], Try(c) if c[0] == "taskkill" && c.contains(&format!("PID ne {}", std::process::id()))));
+        assert!(matches!(u.iter().find(|st| matches!(st, Admin(_))), Some(Admin(c)) if c[4].contains("Remove-NetFirewallRule") && !c[4].contains("New-")));
     }
 
     #[test]
