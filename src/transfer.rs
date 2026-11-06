@@ -68,19 +68,56 @@ pub fn pair_with(host: &str, code: &str) -> Result<Partner, String> {
     Ok(p)
 }
 
-/// The partner to send to: the one named by `to`, else the only one.
-pub fn only_partner(ps: Vec<Partner>, to: Option<&str>) -> Result<Partner, String> {
-    if let Some(to) = to {
-        return config::find(&ps, to).cloned();
-    }
-    match &ps[..] {
-        [] => Err(config::NOT_PAIRED.into()),
-        [p] => Ok(p.clone()),
-        _ => {
-            let names: Vec<&str> = ps.iter().map(|p| p.name.as_str()).collect();
-            Err(format!("several partners ({}): choose one with --to <name>", names.join(", ")))
+/// How often the tray pings its partners.
+pub const PRESENCE_EVERY: Duration = Duration::from_secs(5);
+const PING_TIMEOUT: Duration = Duration::from_secs(1);
+pub const NOBODY_ONLINE: &str = "not sent: no partner online";
+
+/// True only if the partner's listener completes a Noise handshake for our id within 1 s.
+pub fn ping(p: &Partner) -> bool {
+    let Ok(addr) = config::resolve(&p.host, crate::PORT) else { return false };
+    let Ok(s) = TcpStream::connect_timeout(&addr, PING_TIMEOUT) else { return false };
+    let _ = s.set_read_timeout(Some(PING_TIMEOUT));
+    let _ = s.set_write_timeout(Some(PING_TIMEOUT));
+    Session::client(s, b'H', &p.id, &p.secret).is_ok()
+}
+
+/// The partners that answer a ping, in list order (pinged in parallel).
+pub fn online(ps: &[Partner]) -> Vec<Partner> {
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = ps.iter().map(|p| sc.spawn(move || ping(p))).collect();
+        ps.iter().zip(hs).filter_map(|(p, h)| h.join().unwrap_or(false).then(|| p.clone())).collect()
+    })
+}
+
+/// Every `PRESENCE_EVERY`: ping the partners, store who answered, call `changed` when the set of ids changes.
+pub fn watch_online(shared: Arc<Mutex<Vec<Partner>>>, changed: impl Fn() + Send + 'static) -> ! {
+    loop {
+        let now = online(&config::load_partners().unwrap_or_default());
+        let mut cur = shared.lock().unwrap_or_else(|e| e.into_inner());
+        if cur.iter().map(|p| p.id).ne(now.iter().map(|p| p.id)) {
+            *cur = now;
+            drop(cur);
+            changed();
         }
+        std::thread::sleep(PRESENCE_EVERY);
     }
+}
+
+pub enum Target {
+    Nobody,
+    One(Partner),
+    Several(Vec<Partner>),
+}
+
+/// Whom to send to among the online partners; `to` picks one by name or address.
+pub fn target(mut online: Vec<Partner>, to: Option<&str>) -> Result<Target, String> {
+    Ok(match (online.len(), to) {
+        (0, _) => Target::Nobody,
+        (_, Some(to)) => Target::One(config::find(&online, to)?.clone()),
+        (1, None) => Target::One(online.remove(0)),
+        _ => Target::Several(online),
+    })
 }
 
 /// Every path must be an existing regular file. Runs before connecting.
@@ -267,6 +304,17 @@ impl Listener {
                     Err(e) if e.starts_with("handshake failed") => Event::Refused(ip),
                     Err(e) => Event::Error(e),
                 });
+            }
+            // Presence ping: answer the handshake for a known id, else close. No event either way.
+            b'H' => {
+                let mut id = [0u8; 8];
+                if s.read_exact(&mut id).is_err() {
+                    return;
+                }
+                let ps = config::load_partners_from(&self.config_dir).unwrap_or_default();
+                if let Some(p) = ps.into_iter().find(|p| p.id == id) {
+                    let _ = Session::server(s, &p.secret);
+                }
             }
             _ => on_event(Event::Refused(ip)),
         }
@@ -486,6 +534,59 @@ mod tests {
         let e = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(matches!(e, Event::Refused(_)), "{e:?}");
         assert_eq!(count(&dl), 0);
+    }
+
+    /// A running listener that knows `ps`; the receiver gets its events.
+    fn listening(ps: &[Partner]) -> (u16, std::sync::mpsc::Receiver<Event>) {
+        let cfg = tmp();
+        let l = Listener::bind_with(0, tmp(), cfg.clone()).unwrap();
+        let port = l.port();
+        config::save_partners_to(&cfg, ps).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        std::thread::spawn(move || l.run(move |e| tx.lock().unwrap().send(e).unwrap()));
+        (port, rx)
+    }
+
+    #[test]
+    fn ping_known_partner_true() {
+        let (port, rx) = listening(&[partner("127.0.0.1", [7; 32])]);
+        assert!(ping(&partner(&format!("127.0.0.1:{port}"), [7; 32])));
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a ping makes no event");
+    }
+
+    #[test]
+    fn ping_unknown_id_false() {
+        let (port, rx) = listening(&[partner("127.0.0.1", [7; 32])]);
+        assert!(!ping(&partner(&format!("127.0.0.1:{port}"), [8; 32])));
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a ping makes no event");
+    }
+
+    #[test]
+    fn ping_nobody_listening_false_fast() {
+        let t = Instant::now();
+        assert!(!ping(&partner("127.0.0.1:1", [7; 32])));
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn online_lists_only_answering() {
+        let (port, _rx) = listening(&[partner("127.0.0.1", [7; 32])]);
+        let dead = Partner { name: "dead".into(), ..partner("127.0.0.1:1", [1; 32]) };
+        let alive = Partner { name: "alive".into(), ..partner(&format!("127.0.0.1:{port}"), [7; 32]) };
+        let names: Vec<String> = online(&[dead, alive]).into_iter().map(|p| p.name).collect();
+        assert_eq!(names, ["alive"]);
+    }
+
+    #[test]
+    fn target_by_online_count() {
+        let (a, b) = (Partner { name: "pc-a".into(), ..partner("h", [1; 32]) }, Partner { name: "pc-b".into(), ..partner("h", [2; 32]) });
+        assert!(matches!(target(vec![], None), Ok(Target::Nobody)));
+        assert!(matches!(target(vec![a.clone()], None), Ok(Target::One(p)) if p.name == "pc-a"));
+        assert!(matches!(target(vec![a.clone(), b.clone()], None), Ok(Target::Several(v)) if v.len() == 2));
+        assert!(matches!(target(vec![a.clone(), b.clone()], Some("PC-B")), Ok(Target::One(p)) if p.name == "pc-b"));
+        let e = target(vec![a, b], Some("nope")).err().unwrap();
+        assert!(e.contains("pc-a") && e.contains("pc-b"), "{e}");
     }
 
     #[test]

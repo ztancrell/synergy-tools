@@ -1,8 +1,11 @@
 //! Drop window: a small always-on-top window; files dropped on it are sent to the partner.
 //! State is shown in the window title (no drawing crate).
 
+use crate::config::Partner;
+use crate::transfer::Target;
 use crate::{config, notify, pair, transfer};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, StartCause, WindowEvent};
@@ -12,7 +15,7 @@ use tao::window::WindowBuilder;
 use tao::platform::unix::WindowExtUnix as _;
 #[cfg(windows)]
 use tao::platform::windows::WindowExtWindows as _;
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
+use tray_icon::menu::{ContextMenu as _, Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Requested size; the WM/GTK may enlarge it (200x200 on Openbox), so placement uses the real size.
@@ -40,6 +43,8 @@ pub enum UserEvent {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     /// Linux: one finished drop, the whole batch.
     Dropped(Vec<PathBuf>),
+    /// Wake: re-read the shared online list.
+    Online,
 }
 
 /// `text/uri-list` body -> local paths. Only `file://` URIs (host empty or `localhost`) count.
@@ -219,26 +224,53 @@ fn tray_state(paired: bool, error_active: bool, busy: bool) -> TrayState {
     }
 }
 
-fn status_text(paired: Option<&str>) -> String {
-    match paired {
-        Some(h) => format!("Paired with {h}"),
-        None => "Not paired".into(),
+fn status_text(paired: bool, online: &[Partner]) -> String {
+    match (paired, online) {
+        (false, _) => "Not paired".into(),
+        (true, []) => "No partner online".into(),
+        _ => format!("Online: {}", online.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")),
     }
 }
 
-/// How often the partners file is re-read, so an `unpair` from a terminal shows up.
-const PEER_CHECK: Duration = Duration::from_secs(10);
+fn is_paired() -> bool {
+    config::load_partners().is_ok_and(|ps| !ps.is_empty())
+}
+
+/// Send `files` to `p` on a worker thread; the result comes back as `SendDone`.
+fn spawn_send(proxy: &tao::event_loop::EventLoopProxy<UserEvent>, files: Vec<PathBuf>, p: Partner) {
+    let proxy = proxy.clone();
+    std::thread::spawn(move || {
+        let res = transfer::check_files(&files).and_then(|_| transfer::send_files(&p, &files));
+        let _ = proxy.send_event(UserEvent::SendDone(files.len(), res));
+    });
+}
+
+/// Pop up a menu of `ps` on the drop window; a choice arrives as `UserEvent::Menu`.
+fn show_picker(window: &tao::window::Window, ps: &[Partner]) -> Result<Vec<(MenuId, Partner)>, String> {
+    let menu = Menu::new();
+    let mut ids = Vec::new();
+    for p in ps {
+        let item = MenuItem::new(&p.name, true, None);
+        menu.append(&item).map_err(|e| e.to_string())?;
+        ids.push((item.id().clone(), p.clone()));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        menu.show_context_menu_for_gtk_window(window.gtk_window().upcast_ref::<gtk::Window>(), None);
+    }
+    // SAFETY: the HWND is the live drop window's.
+    #[cfg(windows)]
+    unsafe {
+        menu.show_context_menu_for_hwnd(window.hwnd(), None);
+    }
+    Ok(ids)
+}
 
 fn tray_icon_for(s: TrayState) -> Icon {
     Icon::from_rgba(icon_rgba(s), 32, 32).expect("32x32 RGBA")
 }
 
-fn tooltip(paired: Option<&str>) -> String {
-    match paired {
-        Some(h) => format!("synergy-tools: paired with {h}"),
-        None => "synergy-tools: not paired".into(),
-    }
-}
 
 /// A tray app started at login has no visible stderr: failures also go to a notification.
 pub fn run() -> Result<(), String> {
@@ -250,6 +282,7 @@ fn start() -> Result<(), String> {
     let dir = dirs::download_dir().ok_or_else(|| "can't find your Downloads folder".to_string())?;
     let listener = transfer::Listener::bind(crate::PORT, dir)?;
     let pairing = listener.pairing.clone();
+    let shared_online = Arc::new(Mutex::new(Vec::new()));
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -272,6 +305,14 @@ fn start() -> Result<(), String> {
         });
     }
     {
+        let (shared, proxy) = (shared_online.clone(), proxy.clone());
+        std::thread::spawn(move || {
+            transfer::watch_online(shared, move || {
+                let _ = proxy.send_event(UserEvent::Online);
+            })
+        });
+    }
+    {
         let proxy = proxy.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             let _ = proxy.send_event(UserEvent::Menu(e.id));
@@ -290,7 +331,7 @@ fn start() -> Result<(), String> {
         gtk_minimized(&window, proxy.clone());
     }
     let (status, toggle, pair_item, quit) = (
-        MenuItem::new(status_text(None), false, None),
+        MenuItem::new(status_text(false, &[]), false, None),
         MenuItem::new("Hide drop window", true, None),
         MenuItem::new("Pair…", true, None),
         MenuItem::new("Quit", true, None),
@@ -305,11 +346,16 @@ fn start() -> Result<(), String> {
     // Pairing code shown in the title until it expires.
     let mut code: Option<(String, Instant)> = None;
     let mut receiving = 0usize;
-    let mut peer: Option<String> = None;
-    let mut next_peer_check = Instant::now();
+    // ponytail: re-read on presence changes and pairing only; unpairing the last (offline) partner
+    // from a terminal shows "No partner online" until the next change or restart.
+    let mut paired = is_paired();
+    let mut online: Vec<Partner> = Vec::new();
+    // Files of a drop waiting for the picker, and its menu ids. A new drop replaces them;
+    // dismissing the picker leaves nothing to clean up.
+    let mut held: Option<(Vec<PathBuf>, Vec<(MenuId, Partner)>)> = None;
     let mut visible = true;
     let mut shown = title_for(&DropState::Idle);
-    let mut shown_tray: Option<(TrayState, Option<String>)> = None;
+    let mut shown_tray: Option<(TrayState, String)> = None;
 
     event_loop.run(move |event, target, flow| {
         match event {
@@ -380,14 +426,23 @@ fn start() -> Result<(), String> {
             // End of an event batch: all files of one drop have arrived.
             Event::MainEventsCleared if !pending.is_empty() => {
                 let files = std::mem::take(&mut pending);
-                t.start(files.len());
-                reset_at = None;
-                let proxy = proxy.clone();
-                std::thread::spawn(move || {
-                    let res = transfer::check_files(&files)
-                        .and_then(|_| transfer::send_files(&transfer::only_partner(config::load_partners()?, None)?, &files));
-                    let _ = proxy.send_event(UserEvent::SendDone(files.len(), res));
-                });
+                held = None;
+                match transfer::target(online.clone(), None) {
+                    Ok(Target::One(p)) => {
+                        t.start(files.len());
+                        reset_at = None;
+                        spawn_send(&proxy, files, p);
+                    }
+                    Ok(Target::Several(ps)) => match show_picker(&window, &ps) {
+                        Ok(ids) => held = Some((files, ids)),
+                        Err(e) => notify::error(&format!("not sent: can't show the partner menu: {e}")),
+                    },
+                    // `target` without `to` never errs; Nobody is the only other case.
+                    _ => {
+                        t.start(files.len());
+                        let _ = proxy.send_event(UserEvent::SendDone(files.len(), Err(transfer::NOBODY_ONLINE.into())));
+                    }
+                }
             }
             Event::UserEvent(UserEvent::SendDone(n, res)) => {
                 match &res {
@@ -398,7 +453,6 @@ fn start() -> Result<(), String> {
                     }
                 }
                 t.finish(n, res.is_ok());
-                next_peer_check = Instant::now();
                 if t.in_flight == 0 {
                     reset_at = Some(Instant::now() + RESET_AFTER);
                 }
@@ -411,12 +465,11 @@ fn start() -> Result<(), String> {
                 transfer::Event::Receiving(_) => receiving += 1,
                 transfer::Event::Received(r) => {
                     receiving = receiving.saturating_sub(1);
-                    next_peer_check = Instant::now();
                     notify::received(&r)
                 }
                 transfer::Event::Paired(name) => {
                     code = None;
-                    next_peer_check = Instant::now();
+                    paired = true;
                     notify::info(&format!("Paired with {name}"));
                 }
                 transfer::Event::PairFailed(e) => {
@@ -433,8 +486,17 @@ fn start() -> Result<(), String> {
                 // A stranger knocking is logged by the listener's caller in the CLI; here it is only noise.
                 transfer::Event::Refused(ip) => eprintln!("refused connection from {ip}: not a partner"),
             },
+            Event::UserEvent(UserEvent::Online) => {
+                online = shared_online.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                paired = is_paired();
+            }
             Event::UserEvent(UserEvent::Menu(id)) => {
-                if id == *quit.id() {
+                let picked = held.as_ref().and_then(|(_, ids)| ids.iter().find(|(i, _)| *i == id)).map(|(_, p)| p.clone());
+                if let (Some(p), Some((files, _))) = (picked, held.take()) {
+                    t.start(files.len());
+                    reset_at = None;
+                    spawn_send(&proxy, files, p);
+                } else if id == *quit.id() {
                     *flow = ControlFlow::Exit;
                     return;
                 } else if id == *toggle.id() {
@@ -465,14 +527,6 @@ fn start() -> Result<(), String> {
                 if code.as_ref().is_some_and(|(_, at)| at.elapsed() >= transfer::PAIR_WINDOW) {
                     code = None;
                 }
-                if now >= next_peer_check {
-                    // Names of all partners, or None when there are none.
-                    peer = config::load_partners()
-                        .ok()
-                        .filter(|ps| !ps.is_empty())
-                        .map(|ps| ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
-                    next_peer_check = now + PEER_CHECK;
-                }
             }
             _ => {}
         }
@@ -485,17 +539,18 @@ fn start() -> Result<(), String> {
             window.set_title(&title);
             shown = title;
         }
-        let ts = tray_state(peer.is_some(), error_until.is_some(), t.in_flight > 0 || receiving > 0);
-        if shown_tray.as_ref() != Some(&(ts, peer.clone())) {
-            status.set_text(status_text(peer.as_deref()));
+        let ts = tray_state(paired, error_until.is_some(), t.in_flight > 0 || receiving > 0);
+        let line = status_text(paired, &online);
+        if shown_tray.as_ref() != Some(&(ts, line.clone())) {
+            status.set_text(&line);
             if let Some(i) = &tray {
                 let _ = i.set_icon(Some(tray_icon_for(ts)));
-                let _ = i.set_tooltip(Some(tooltip(peer.as_deref())));
+                let _ = i.set_tooltip(Some(format!("synergy-tools: {line}")));
             }
-            shown_tray = Some((ts, peer.clone()));
+            shown_tray = Some((ts, line));
         }
         // Computed after handling, so a timer armed above takes effect at once.
-        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW), Some(next_peer_check)].into_iter().flatten().min();
+        let wake = [reset_at, error_until, code.as_ref().map(|(_, at)| *at + transfer::PAIR_WINDOW)].into_iter().flatten().min();
         *flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
     })
 }

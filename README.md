@@ -18,6 +18,12 @@ authenticated. Usage steps are in each tool's README.
 several; `synergy-tools partners` lists them. Audio joins this pairing when it moves into
 `synergy-tools`; until then `synergy-audio` pairs on its own. Details: [docs/files.md](docs/files.md#pairing).
 
+### Tray
+
+The tray menu's first line shows `Not paired`, `No partner online` or `Online: <names>`; the app
+pings its partners every 5 seconds. Dropped files go to the online partner, with a menu to pick
+one when several are online. Details: [docs/files.md](docs/files.md#daily-use).
+
 ## Layout
 
 The `synergy-tools` program is the Rust crate at the repo root (`Cargo.toml`, `src/`), formerly

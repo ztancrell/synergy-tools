@@ -2,7 +2,8 @@
 //!
 //! Frame: `u16` big-endian length + bytes. A connection starts with one mode byte:
 //! `b'P'` pairing, then frames; `b'S'` session, then the 8-byte partner id (which tells the
-//! listener whose secret to use), then frames.
+//! listener whose secret to use), then frames; `b'H'` presence ping, then the partner id and
+//! the handshake only (an unknown id is closed silently).
 //!
 //! Session: `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, PSK = pairing secret, prologue
 //! `synergy-tools files v1`. The client sends handshake message 1, the server replies with

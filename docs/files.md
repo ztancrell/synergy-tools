@@ -52,8 +52,8 @@ again (same name and OS) replaces its old entry instead of adding a second one.
 - If a partner's address changes, run `synergy-tools partner <name> <new address>` (the secret is
   kept, no new pairing needed).
 - `synergy-tools unpair <name>` forgets one partner.
-- With several partners, `files send` needs `--to <name>`; a drop on the drop window works only
-  while there is exactly one partner (otherwise it fails with an error naming them).
+- Files go to the partner that is online (see Daily use); with several online, the drop window
+  asks and `files send` needs `--to <name>`.
 
 `<name>` matches the partner's name (case-insensitive) or its address. The list is the file
 `partners` in `~/.config/synergy-tools/` (Linux, mode 0600) or `%APPDATA%\synergy-tools\`
@@ -63,7 +63,10 @@ again (same name and OS) replaces its old entry instead of adding a second one.
 
 - **Drop window:** a small window titled `Drop files to send` sits at the bottom-right of the
   screen (requested 160x160; the window manager may make it larger, e.g. 200x200 on Openbox).
-  Drag files onto it (from Explorer, Thunar, ...). The title shows `Release to send`,
+  Drag files onto it (from Explorer, Thunar, ...). They go to the partner that is online. With
+  several online, a menu of their names pops up on the window: pick one (dismissing it sends
+  nothing; the next drop asks again). With nobody online a notification says
+  `not sent: no partner online`. The title shows `Release to send`,
   `Sending 2 files…`, then `Sent ✓` or `Not sent`, and a notification gives the result. Closing or
   minimizing the window only hides it to the tray (tray menu: Show drop window); it has no
   taskbar / task-list entry. Without a tray icon, minimize is a normal minimize and the entry stays. On Windows and on Linux/X11 (e.g. Openbox)
@@ -72,7 +75,8 @@ again (same name and OS) replaces its old entry instead of adding a second one.
   (results show as notifications); nothing creates one for you this phase (see Install).
 - **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
   idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
-  out) shows the status, `Paired with <names>` or `Not paired` (the hover tooltip with the same text
+  out) shows the status: `Not paired`, `No partner online` or `Online: <names>`, updated within
+  5 seconds of a partner starting or stopping (the hover tooltip with the same text
   works on Windows only; Linux trays don't get it). Menu: `Hide drop window` / `Show drop window`,
   `Pair…`, `Quit`. If the tray icon can't be created (library missing), a notification says so
   and closing the drop window quits the app. If the receiver thread dies, the app says so and
@@ -89,14 +93,17 @@ synergy-tools pair <host> <code>               pair with the PC showing <code> (
 synergy-tools partners                         list partners
 synergy-tools partner <name> <host>            change a partner's address
 synergy-tools unpair <name>                    forget a partner
-synergy-tools files send [--to <name>] <file>...  send files to a partner
+synergy-tools files send [--to <name>] <file>...  send files to the online partner
 synergy-tools files listen                     receive files without the tray app
 synergy-tools --version
 ```
 
 On Windows use `.\synergy-tools.exe ... | Out-Host`. `<host>` is an IP address or name,
-optionally `:port` (default 24851). `files send` goes to the only partner, or to `--to <name>` when
-there are several; it takes files only (folders are refused: zip them first)
+optionally `:port` (default 24851). `files send` first checks which partners are online (1 second
+each, in parallel) and sends to the one that is; with several online it fails with
+`several partners online (A, B): use --to <name>`, and `--to <name>` picks one of them. Nobody
+online fails with `not sent: no partner online`. Without a terminal (Send To) these errors show as
+notifications. It takes files only (folders are refused: zip them first)
 and fails at once, within 3 seconds, if the other PC is unreachable; nothing is queued or retried.
 If the tray app is already running it holds port 24851, so `pair` and `files listen` say so; use its tray
 menu or quit it first.
@@ -141,8 +148,10 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
   The rule covers only that exe path.
 - **`not sent: <name> is a folder, zip it first`**: only files are sent.
 - **`not sent: the other PC refused (pairing doesn't match: pair again)`**: `unpair <name>` and pair again.
-- **`several partners (...): choose one with --to <name>`**: add `--to <name>`, or `unpair` the
-  partners you no longer use.
+- **`not sent: no partner online`**: no partner's synergy-tools answered (tray app or
+  `files listen` not running there, PC off, address out of date or firewall; see the first entry).
+- **`several partners online (...): use --to <name>`**: add `--to <name>`, or drop the files on the
+  drop window and pick from its menu.
 - **`port 24851 is busy: synergy-tools is probably already running, or the old synergy-dragndrop`**:
   another copy (or the old `synergy-dragndrop`, if it still autostarts) holds the port. Use the tray
   menu **Pair…** or quit it before running `pair` or `files listen` in a terminal.
@@ -187,7 +196,8 @@ Windows for pushes to `main` and all pull requests. There is no release workflow
 
 ## How it works
 
-TCP port 24851, one connection per batch. The first byte says what it is: `P` pairing, `S` session.
+TCP port 24851, one connection per batch. The first byte says what it is: `P` pairing, `S` session,
+`H` presence ping.
 Pairing runs SPAKE2 over the 8-digit code (one attempt, 120 s); the two PCs also exchange their
 name and OS, and both key confirmations cover them, so a tampered name fails the pairing. Both
 sides keep a shared secret and a partner id, the first 8 bytes of SHA-256(`synergy-tools id` +
@@ -197,11 +207,16 @@ pre-shared key, then encrypted messages: batch header (count, sender name), then
 header (size, name), data chunks and an end marker; the receiver answers with the number saved
 or a failure reason. Frames are a 16-bit length plus bytes. Connect timeout 3 s, stall timeout 30 s.
 
+Presence: every 5 seconds the tray app sends each partner `H`, its partner id and the Noise
+handshake, with a 1-second timeout; a partner that completes the handshake is online. The listener
+answers only a known id and closes otherwise, without a notification or log line. `files send`
+does the same check once before sending.
+
 ## Security notes
 
 - Only partners can send: a connection with an unknown partner id or a failed handshake is
   refused and `refused connection from <ip>: not a partner` is printed by `files listen` and `pair` in the
-  terminal (the tray app has no log).
+  terminal (the tray app has no log). A presence ping with an unknown id is closed silently.
 - Transfers are encrypted and authenticated, but the 8-digit code is short: pair on a network you
   trust, within the 2-minute window. Anyone who guesses it in the one attempt would be paired, so
   a failed attempt ends pairing mode.

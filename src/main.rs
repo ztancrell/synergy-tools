@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
   synergy-tools partners                         list partners
   synergy-tools partner <name> <host>            change a partner's address
   synergy-tools unpair <name>                    forget a partner
-  synergy-tools files send [--to <name>] <file>...  send files to a partner
+  synergy-tools files send [--to <name>] <file>...  send files to the online partner
   synergy-tools files listen                     receive files without the tray app
   synergy-tools --version";
 
@@ -112,8 +112,20 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
             };
             let paths: Vec<PathBuf> = args[first..].iter().map(PathBuf::from).collect();
             // Send To has no terminal, so the result also goes to a notification.
-            let res = transfer::check_files(&paths)
-                .and_then(|_| transfer::send_files(&transfer::only_partner(config::load_partners()?, to)?, &paths));
+            let res = transfer::check_files(&paths).and_then(|_| {
+                let ps = config::load_partners()?;
+                if ps.is_empty() {
+                    return Err(config::NOT_PAIRED.into());
+                }
+                match transfer::target(transfer::online(&ps), to)? {
+                    transfer::Target::Nobody => Err(transfer::NOBODY_ONLINE.into()),
+                    transfer::Target::One(p) => transfer::send_files(&p, &paths),
+                    transfer::Target::Several(v) => {
+                        let names: Vec<&str> = v.iter().map(|p| p.name.as_str()).collect();
+                        Err(format!("several partners online ({}): use --to <name>", names.join(", ")))
+                    }
+                }
+            });
             match &res {
                 Ok(m) => notify::info(m),
                 Err(e) => notify::error(e),
