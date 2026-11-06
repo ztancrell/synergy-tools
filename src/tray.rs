@@ -236,7 +236,7 @@ fn status_text(paired: bool, online: &[Partner]) -> String {
     }
 }
 
-fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String {
+pub(crate) fn audio_line(st: &Status, name_of: impl Fn(&[u8; 8]) -> String) -> String {
     match st {
         Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
         Status::Streaming(id) => format!("Audio: streaming to {}", name_of(id)),
@@ -299,7 +299,8 @@ fn start() -> Result<(), String> {
     let pairing = listener.pairing.clone();
     let shared_online = Arc::new(Mutex::new(Vec::new()));
     let sh = audio::Shared::new(config::auto_mute_on());
-    audio::run_in_tray(sh.clone(), shared_online.clone());
+    let audio_quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let audio_thread = audio::run_in_tray(sh.clone(), shared_online.clone(), audio_quit.clone());
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -524,6 +525,12 @@ fn start() -> Result<(), String> {
                     reset_at = None;
                     spawn_send(&proxy, files, p);
                 } else if id == *quit.id() {
+                    // Let `send` stop and unmute first, so it can't mute again after the restore.
+                    audio_quit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let until = Instant::now() + Duration::from_secs(1);
+                    while !audio_thread.is_finished() && Instant::now() < until {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     audio::mute::restore();
                     *flow = ControlFlow::Exit;
                     return;

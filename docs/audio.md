@@ -31,7 +31,7 @@ still works. Windows sender → Linux receiver.
   restarts (off = the file `auto-mute-off` in the config folder, `%APPDATA%\synergy-tools`).
   **Quit** unmutes them too.
 - **Don't run `synergy-tools audio receive` alongside the tray app** on Linux: both want UDP
-  24850, and the tray's audio line then shows `Audio: error: can't bind UDP 24850 ...` (files
+  24850, and the tray's audio line then shows `Audio: error: UDP 24850 busy: quit old synergy-audio / other synergy-tools ...` (files
   keep working). The same happens if the old `synergy-audio` receiver still autostarts; the
   message says how to stop it. A headless `audio receive` also doesn't answer presence pings,
   so a Windows tray never sees it online: it only works with `audio send` from the command line.

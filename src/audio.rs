@@ -124,28 +124,29 @@ fn wait(d: Duration, quit: &AtomicBool) -> bool {
 /// Audio for the tray, on its own threads; errors go to `sh.status`, never back to the tray.
 /// Receiver (Linux): bind once (busy port: error, no audio), then play, retrying every 10 s.
 /// Sender: follow `pick_target(online)` once a second, restarting `send` when it changes.
-pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<Partner>>>) {
+/// Setting `quit` ends it; the returned thread finishes once `send` has unmuted.
+pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<Partner>>>, quit: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     let set = |sh: &Shared, st: Status| *sh.status.lock().unwrap() = st;
     if RECEIVER {
-        std::thread::spawn(move || {
+        return std::thread::spawn(move || {
             let sock = match bind_receiver(PORT) {
                 Ok(s) => s,
                 Err(e) => return set(&sh, Status::Error(e)),
             };
-            let never = Arc::new(AtomicBool::new(false));
             loop {
                 let r = sock.try_clone().map_err(|e| e.to_string());
-                if let Err(e) = r.and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), never.clone())) {
+                if let Err(e) = r.and_then(|s| receive(s, DEFAULT_BUFFER_MS, peers, sh.clone(), quit.clone())) {
                     set(&sh, Status::Error(e));
                 }
-                std::thread::sleep(RETRY_EVERY);
+                if !wait(RETRY_EVERY, &quit) {
+                    return;
+                }
             }
         });
-        return;
     }
     std::thread::spawn(move || {
         let mut cur: Option<([u8; 8], Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
-        loop {
+        while wait(Duration::from_secs(1), &quit) {
             let want = pick_target(&online.lock().unwrap_or_else(|e| e.into_inner())).cloned();
             if cur.as_ref().map(|c| c.0) != want.as_ref().map(|p| p.id) {
                 if let Some((_, quit, h)) = cur.take() {
@@ -172,9 +173,12 @@ pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<Partner>>>) {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_secs(1));
         }
-    });
+        if let Some((_, q, h)) = cur {
+            q.store(true, Relaxed);
+            let _ = h.join(); // `send` unmutes on the way out
+        }
+    })
 }
 
 // ---------- packet ----------
@@ -800,8 +804,8 @@ fn peers_from(dir: &Path) -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
 pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
     UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
         format!(
-            "can't bind UDP {port}: {e}. Is another synergy-tools or the old synergy-audio receiver running? \
-             Stop it (old one: systemctl --user disable --now synergy-audio)"
+            "UDP {port} busy: quit old synergy-audio / other synergy-tools ({e}). \
+             Old one: systemctl --user disable --now synergy-audio"
         )
     })
 }
@@ -986,7 +990,9 @@ mod tests {
     fn receiver_bind_busy_message() {
         let held = UdpSocket::bind("0.0.0.0:0").unwrap();
         let e = bind_receiver(held.local_addr().unwrap().port()).unwrap_err();
-        assert!(e.contains("synergy-audio"), "{e}");
+        // The tray cuts the audio line; what to stop must survive the cut.
+        let line = crate::tray::audio_line(&Status::Error(e), |id| crate::config::hex(id));
+        assert!(line.contains("synergy-audio"), "{line}");
     }
 
     fn no_peers() -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
