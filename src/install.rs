@@ -208,7 +208,7 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
     let thunar = p.data.join("Thunar/sendto/synergy-tools.desktop");
     let dolphin = p.data.join("kio/servicemenus/synergy-tools.desktop");
     let nautilus = p.data.join("nautilus/scripts/Send to other PC");
-    let old_bin = |n: &str| p.home.join(".local/bin").join(n);
+    let old_bin = |n: &str| p.home.join(format!(".local/bin/{n}"));
     let s = |p: &Path| p.display().to_string();
     if !install {
         return vec![
@@ -462,7 +462,7 @@ mod tests {
         let bin = s(&installed_exe(&p));
         let xdg = p.config.join("autostart/synergy-tools.desktop");
         let x = linux(&p, true, false);
-        assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains(&format!("Exec=\"{bin}\"\n")))));
+        assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains(&format!("Exec={}\n", desktop_quote(&installed_exe(&p)))))));
         assert!(!x.contains(&Delete(xdg.clone())));
         let o = linux(&p, true, true);
         assert!(o.contains(&Delete(xdg.clone())));
