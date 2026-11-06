@@ -209,13 +209,14 @@ fn bind_retrying(port: u16, every: Duration, sh: &Shared, quit: &AtomicBool) -> 
 /// Run audio for the tray on background threads and return at once. Receiver: bind UDP `PORT`
 /// (retrying every 5 s while it is busy, with `Status::Error` showing why) and play, retrying
 /// device errors every 10 s.
-/// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes.
+/// Sender: every 1 s follow `pick_target(online)`, restarting `send` when it changes; setting
+/// `quit` stops it, and the returned thread ends once `send` has stopped (and unmuted).
 // ponytail: these threads have no panic guard; a panic freezes the audio line on its last
 // status. Wrap the bodies in catch_unwind and set Status::Error if that ever happens.
-pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
+pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>, quit: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         if RECEIVER {
-            // Never set: the thread is detached and ends with the process on Quit.
+            // Never set (nor `quit`): the receiver never mutes, so it just ends with the process.
             let never = Arc::new(AtomicBool::new(false));
             let Some(sock) = bind_retrying(PORT, BIND_RETRY_EVERY, &sh, &never) else { return };
             loop {
@@ -228,7 +229,7 @@ pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
         }
         // (target id, its quit flag, its thread)
         let mut running: Option<([u8; 8], Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
-        loop {
+        while !quit.load(Relaxed) {
             let want = pick_target(&online.lock().unwrap_or_else(|e| e.into_inner())).cloned();
             if want.as_ref().map(|p| p.id) != running.as_ref().map(|r| r.0) {
                 if let Some((_, quit, t)) = running.take() {
@@ -256,9 +257,13 @@ pub fn run_in_tray(sh: Arc<Shared>, online: Arc<Mutex<Vec<config::Partner>>>) {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_secs(1));
+            wait(Duration::from_secs(1), &quit);
         }
-    });
+        if let Some((_, q, t)) = running {
+            q.store(true, Relaxed);
+            let _ = t.join(); // `send` unmutes on the way out
+        }
+    })
 }
 
 // ---------- packet ----------
@@ -474,8 +479,8 @@ fn peers_from(dir: &Path) -> Result<HashMap<[u8; 8], [u8; 32]>, String> {
 pub fn bind_receiver(port: u16) -> Result<UdpSocket, String> {
     UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
         format!(
-            "can't bind UDP {port}: {e}. Is another synergy-tools or the old synergy-audio receiver running? \
-             Stop it (old one: systemctl --user disable --now synergy-audio)"
+            "UDP {port} busy: quit old synergy-audio / other synergy-tools ({e}). \
+             Old one: systemctl --user disable --now synergy-audio"
         )
     })
 }
@@ -1032,7 +1037,9 @@ mod tests {
         let held = UdpSocket::bind("0.0.0.0:0").unwrap();
         let port = held.local_addr().unwrap().port();
         let e = bind_receiver(port).unwrap_err();
-        assert!(e.contains("synergy-audio"), "{e}");
+        // The tray cuts the audio line; what to stop must survive the cut.
+        let line = crate::tray::audio_line(&Status::Error(e), false, |_| String::new());
+        assert!(line.contains("synergy-audio"), "{line}");
     }
 
     #[test]

@@ -338,7 +338,9 @@ handshake, then close; 1 s timeout); the partners that complete it are "online".
 answers a ping silently: no notification, and an unknown id just closes the connection.
 Pairing runs SPAKE2 over the 8-digit code (one attempt, 120 s); each side also sends its OS and
 name, both confirmations cover both names, and both sides keep a shared secret plus the other's
-name. The partner id is the first 8 bytes of `SHA256("synergy-tools id" ‖ secret)`; a session
+name. A pairing is refused if the other's OS is not just letters, digits and `_`, or its name is
+empty or has a control character (it must fit on one `partners` line). The partner id is the
+first 8 bytes of `SHA256("synergy-tools id" ‖ secret)`; a session
 starts with `S` and the sender's partner id, so the receiver picks that partner's secret.
 A session is a Noise handshake (`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`) with that secret as
 pre-shared key, then encrypted messages: batch header (count, sender name), then for each file a

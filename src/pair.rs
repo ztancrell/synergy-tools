@@ -76,13 +76,15 @@ impl Who {
         format!("{}\n{}", self.os, self.name).into_bytes()
     }
 
-    /// Refuses anything that could not be stored as one partners-file line.
+    /// Refuses anything that could not be stored as one partners-file line:
+    /// the OS must be `[A-Za-z0-9_]+`, the name non-empty without control characters.
     fn decode(b: &[u8]) -> Result<Who, String> {
         let bad = || "pairing failed: the other PC sent a bad name".to_string();
         let s = std::str::from_utf8(b).ok().filter(|_| b.len() <= 1000).ok_or_else(bad)?;
         let (os, name) = s.split_once('\n').ok_or_else(bad)?;
-        let ok = !os.is_empty() && !name.is_empty() && !os.contains(' ') && !s.chars().any(|c| c.is_control() && c != '\n');
-        if !ok || name.contains('\n') {
+        let ok_os = !os.is_empty() && os.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let ok = ok_os && !name.is_empty() && !name.chars().any(char::is_control);
+        if !ok {
             return Err(bad());
         }
         Ok(Who { name: name.into(), os: os.into() })
@@ -194,6 +196,10 @@ mod tests {
         assert!(Who::decode(b"linux\npc\nevil").is_err());
         assert!(Who::decode(b"linux\npc\x07").is_err());
         assert!(Who::decode(b"linux\npc\r").is_err());
+        assert!(Who::decode(b"\npc").is_err());
+        assert!(Who::decode(b"lin/ux\npc").is_err());
+        assert!(Who::decode("l\u{2003}x\npc".as_bytes()).is_err());
+        assert!(Who::decode(b"\npc\nx").is_err());
     }
 
     #[test]

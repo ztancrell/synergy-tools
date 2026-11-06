@@ -36,8 +36,8 @@ The tray menu's audio section:
 - Windows only: `Auto-mute speakers` (on by default): mute the Windows speakers while the
   Linux side is playing ([Auto-mute](#auto-mute-of-the-speakers)). Saved across restarts
   (switched off = a file `auto-mute-off` in the synergy-tools config folder,
-  `%APPDATA%\synergy-tools\`). Switching it off while muted unmutes at once. Quit also
-  unmutes if we muted, and so does the next start after a run that ended while muted (e.g.
+  `%APPDATA%\synergy-tools\`). Switching it off while muted unmutes at once. Quit stops the
+  sender (waiting up to 1 s) and then unmutes if we muted, and so does the next start after a run that ended while muted (e.g.
   Windows shut down while streaming).
 
 Don't run the headless `synergy-tools audio receive` while the Linux tray runs: both want UDP

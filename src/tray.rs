@@ -36,7 +36,7 @@ const AUDIO_LINE_MAX: usize = 60;
 
 /// Audio menu line; `name_of` turns a partner id into a name. `stopped` (the user's Stop)
 /// shows as stopped while waiting, so it agrees with the "Start audio" item.
-fn audio_line(st: &Status, stopped: bool, name_of: impl Fn(&[u8; 8]) -> String) -> String {
+pub(crate) fn audio_line(st: &Status, stopped: bool, name_of: impl Fn(&[u8; 8]) -> String) -> String {
     let line = match st {
         Status::Waiting if stopped => "Audio: stopped".into(),
         Status::Streaming(id) if audio::RECEIVER => format!("Audio: receiving from {}", name_of(id)),
@@ -319,7 +319,8 @@ fn start() -> Result<(), String> {
     let sh = audio::Shared::new(config::auto_mute_on());
     audio::mute::on_ctrl_c_restore();
     audio::mute::restore(); // a mute left by an earlier run (e.g. shut down while streaming)
-    audio::run_in_tray(sh.clone(), online.clone());
+    let audio_quit = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let audio_thread = audio::run_in_tray(sh.clone(), online.clone(), audio_quit.clone());
     {
         let proxy = proxy.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
@@ -557,9 +558,14 @@ fn start() -> Result<(), String> {
                     reset_at = None;
                     spawn_send(&proxy, p, files);
                 } else if id == *quit.id() {
-                    // Quit while we have the speakers muted unmutes them; auto-mute off (not saved)
-                    // first, so the sender can't mute again before the process ends.
+                    // Quit while we have the speakers muted unmutes them. Stop the sender first
+                    // (waiting up to 1 s for it to unmute), so it can't mute again after the restore.
                     sh.auto_mute.store(false, std::sync::atomic::Ordering::Relaxed);
+                    audio_quit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let until = Instant::now() + Duration::from_secs(1);
+                    while !audio::RECEIVER && !audio_thread.is_finished() && Instant::now() < until {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     audio::mute::restore();
                     *flow = ControlFlow::Exit;
                     return;
