@@ -1,6 +1,7 @@
 // No console window for the tray app and Send To; terminal runs re-attach to the parent console.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod audio;
 mod config;
 mod tray;
 mod notify;
@@ -24,6 +25,11 @@ const USAGE: &str = "usage:
   synergy-tools unpair <name>                    forget a partner
   synergy-tools files send [--to <name>] <file>...  send files to the online partner
   synergy-tools files listen                     receive files without the tray app
+  synergy-tools audio send <host[:port]> [--log <file>]  stream this PC's audio to a partner
+                                                 (UDP 24850; --log: status to <file>, emptied past
+                                                 1 MiB, retry every 10s on errors)
+  synergy-tools audio receive [--buffer-ms N]    play what partners stream (default 20 ms)
+  synergy-tools audio unmute                     undo the auto-mute after a killed sender
   synergy-tools --version";
 
 fn downloads() -> Result<PathBuf, String> {
@@ -65,6 +71,12 @@ fn pair_host() -> Result<(), String> {
             _ => {}
         }
     })
+}
+
+/// CLI `audio receive`: UDP 24850, every partner, runs until killed.
+fn audio_receive(buffer_ms: usize) -> Result<(), String> {
+    let quit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    audio::receive(audio::bind_receiver(audio::PORT)?, buffer_ms, audio::peers, audio::Shared::new(true), quit)
 }
 
 fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
@@ -143,6 +155,14 @@ fn run(args: &[std::ffi::OsString]) -> Result<(), String> {
                 }
             })
         }
+        ["audio", "send", target] => audio::send_to(target)?,
+        ["audio", "send", target, "--log", path] => audio::send_logged(target, path)?,
+        ["audio", "receive"] => audio_receive(audio::DEFAULT_BUFFER_MS)?,
+        ["audio", "receive", "--buffer-ms", n] => match n.parse() {
+            Ok(n) if n > 0 => audio_receive(n)?,
+            _ => return Err(format!("--buffer-ms needs a positive integer, got {n:?}")),
+        },
+        ["audio", "unmute"] => audio::mute::restore(),
         _ => return Err(USAGE.into()),
     }
     Ok(())

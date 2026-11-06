@@ -233,5 +233,6 @@ mod tests {
     #[test]
     fn resolve_default_port() {
         assert_eq!(resolve("127.0.0.1", 24851).unwrap().port(), 24851);
+        assert_eq!(resolve("127.0.0.1", crate::audio::PORT).unwrap().port(), 24850);
     }
 }

@@ -5,6 +5,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+cpal = "0.18"
 # Pairing (SPAKE2) and encrypted sessions (Noise NNpsk0).
 snow = { version = "0.10", default-features = false, features = ["default-resolver-crypto"] }
 spake2 = "0.4"
@@ -25,3 +26,5 @@ gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
+# Auto-mute of the Windows speakers (same version cpal already pulls in).
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com"] }
