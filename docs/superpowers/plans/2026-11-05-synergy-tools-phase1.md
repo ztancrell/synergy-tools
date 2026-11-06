@@ -28,6 +28,8 @@
 
 ## Decisions made by the planner (reviewer: check these)
 
+Approved by the user 2026-11-06, all eight. On #3 the user accepts the gap: during phase 1, Mac audio needs the old `synergy-audio` receiver on Linux.
+
 1. **One package at the repo root, no shared pairing crate.** After this plan there is exactly one consumer of pairing/crypto, so a second crate is a boundary with one user; modules (`pair.rs`, `config.rs`, `proto.rs`) give the same separation. Phase 2 (macOS) is the same binary, so it does not change this.
 2. **Old crates are absorbed with `git mv`, then their folders deleted** (Tasks 1 and 4), with their CI/release workflows and install scripts. Between phase 1 and phase 3 there are no install/autostart scripts and no release workflow; old GitHub releases stay as they are.
 3. **The Mac loses audio until phase 2.** The new Linux tray speaks a new pairing and protocol, so the released `synergy-audio` on macOS cannot pair with it. The code does not build on macOS this phase (notifications and drop window are Windows/Linux only).
