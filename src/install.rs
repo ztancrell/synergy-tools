@@ -133,7 +133,8 @@ pub fn apply(steps: &[Step], run: &mut dyn FnMut(&[String]) -> bool) -> Result<V
             }
             Step::Admin(c) => {
                 if !run(c) {
-                    notes.push(format!("Run this as administrator: {}", show_cmd(c)));
+                    // The bare script (last item): pasted into PowerShell, no outer quoting to expand `$`.
+                    notes.push(format!("Run this in an administrator PowerShell: {}", c.last().map_or("", |s| s)));
                 }
             }
             Step::Delete(p) => {
@@ -776,7 +777,7 @@ mod tests {
     fn admin_failure_is_a_note_not_an_error() {
         let notes = apply(&[Admin(vec!["x".into(), "y z".into()])], &mut |_| false).unwrap();
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("as administrator") && notes[0].contains(r#"x "y z""#), "{notes:?}");
+        assert!(notes[0].contains("administrator PowerShell") && notes[0].ends_with(": y z"), "{notes:?}");
         assert!(apply(&[Run(vec!["x".into()])], &mut |_| false).is_err());
         assert_eq!(apply(&[Try(vec!["x".into()])], &mut |_| false), Ok(vec![]));
     }

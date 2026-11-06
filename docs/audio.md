@@ -48,7 +48,7 @@ that PC as online and won't stream to it.
 On Linux the receiver is the tray: `synergy-tools install` (see
 [files.md "Install"](files.md#install)) starts it at desktop login, and the tray plays what the
 partner streams. There is no systemd receiver service any more; `install` removes the old
-`synergy-audio` one. On Windows the sender is the tray too: run `synergy-tools.exe install`
+`synergy-audio` one. On Windows the sender is the tray too: run `.\synergy-tools.exe install | Out-Host`
 (same command, see [files.md "Install"](files.md#windows)); it first runs the old
 `synergy-audio.exe unmute` if present, then removes the old `synergy-audio` scheduled task, and
 starts the tray at login. The macOS installer and release downloads come later in phase 3;
@@ -173,7 +173,7 @@ running Windows 10 through Boot Camp (Wi-Fi). Swap in your own IP address and us
 
 Linux: download or build the new binary, run `synergy-tools install` again, then Quit the tray
 and start it again (`~/.local/bin/synergy-tools`). Windows: copy the new `synergy-tools.exe`
-over as in steps 5-8, run `.\synergy-tools.exe install` again, then Quit the tray and start it
+over as in steps 5-8, run `.\synergy-tools.exe install | Out-Host` again, then Quit the tray and start it
 again (from the Start menu search or `%LOCALAPPDATA%\Programs\synergy-tools`).
 
 Superseded: dev scripts, Linux and Windows autostart and the update script are gone; the

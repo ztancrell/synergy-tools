@@ -54,7 +54,7 @@ Download the Windows program (see "Build from source" until release downloads ex
 PowerShell, in the folder it is in:
 
 ```powershell
-.\synergy-tools.exe install
+.\synergy-tools.exe install | Out-Host
 ```
 
 Windows SmartScreen may say "Windows protected your PC" (the program is unsigned): click
@@ -67,7 +67,7 @@ Windows SmartScreen may say "Windows protected your PC" (the program is unsigned
   pairings don't work with synergy-tools: pair again); then tries to remove the old firewall rule
   `synergy-dragndrop (TCP 24851)` and add `synergy-tools (TCP 24851)` (inbound TCP 24851, private
   and public networks). That needs administrator rights and `install` doesn't ask for them: if it
-  fails, install still succeeds and prints one command to run in an administrator PowerShell;
+  fails, install still succeeds and prints one PowerShell script to paste into an administrator PowerShell;
 - copies the program to `%LOCALAPPDATA%\Programs\synergy-tools\synergy-tools.exe`;
 - starts it at login: the value `synergy-tools` under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no administrator, no scheduled task);
@@ -258,7 +258,7 @@ Linux: `synergy-tools uninstall` stops the tray and removes what `install` added
 `~/.local/bin`, the autostart entry, the three "Send to other PC" entries). Pairings are kept;
 delete `~/.config/synergy-tools` to forget them.
 
-Windows: `.\synergy-tools.exe uninstall` stops the tray and removes the Run value, the Send To
+Windows: `.\synergy-tools.exe uninstall | Out-Host` stops the tray and removes the Run value, the Send To
 entry and the firewall rule `synergy-tools (TCP 24851)` (that one needs administrator rights,
 otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-tools`. Run from
 the installed program itself, it can't delete its own folder: delete the folder by hand.
