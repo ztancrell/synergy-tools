@@ -591,10 +591,10 @@ mod tests {
     #[test]
     fn linux_autostart_xdg_or_openbox() {
         let p = places_in(Path::new("/h"));
-        let bin = s(&installed_exe(&p));
+        let bin = s(&p.home.join(".local/bin/synergy-tools"));
         let xdg = p.config.join("autostart/synergy-tools.desktop");
         let x = linux(&p, true, false);
-        assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains(&format!("Exec={}\n", desktop_quote(&installed_exe(&p)))))));
+        assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains(&format!("Exec={}\n", desktop_quote(&p.home.join(".local/bin/synergy-tools")))))));
         assert!(!x.contains(&Delete(xdg.clone())));
         let o = linux(&p, true, true);
         assert!(o.contains(&Delete(xdg.clone())));
@@ -734,7 +734,7 @@ mod tests {
         let text = fs::read_to_string(&ob).unwrap();
         assert_eq!(text.lines().filter(|l| l.ends_with("# synergy-tools")).count(), 1);
         assert!(!text.contains("synergy-dragndrop"));
-        assert_eq!(fs::read(installed_exe(&p)).unwrap(), b"abc");
+        assert_eq!(fs::read(p.home.join(".local/bin/synergy-tools")).unwrap(), b"abc");
 
         apply(&linux(&p, false, true), &mut stub).unwrap();
         let left: Vec<PathBuf> = snapshot(&t).into_iter().map(|(f, _)| f).collect();
