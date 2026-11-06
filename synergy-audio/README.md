@@ -377,9 +377,14 @@ connection allows a smaller buffer and less delay.
 - After the handshake every packet, both ways, is `D` + 8-byte nonce (u64, little-endian) +
   ChaCha20-Poly1305 ciphertext + 16-byte tag. Audio: nonce = sequence number, payload =
   5 ms of audio (240 frames = 960 bytes), 985 bytes in all. Keepalive (sender, every
-  500 ms, same socket as the audio): nonce with the top bit set, empty payload. Ack
-  (receiver, back to the keepalive's source address and port): its own counter, empty
-  payload. Per session and type the nonce must grow: late, duplicate and replayed packets
+  500 ms, same socket as the audio): nonce with the top bit set. Ack (receiver, back to the
+  keepalive's source address and port): its own counter. Both carry the 9-byte stop
+  control as payload: 1 byte stopped (0 or 1) + 8-byte epoch (u64, little-endian); any
+  other payload is rejected. Each side merges the other's into its own, last writer wins:
+  the higher epoch wins, a tie goes to stopped. Start or Stop on either side (from the tray
+  of the coming `synergy-tools`; the CLI never stops) bumps the epoch. While stopped the
+  sender drops captured audio, the receiver discards audio and empties its buffer, and the
+  sender unmutes. Per session and type the nonce must grow: late, duplicate and replayed packets
   are dropped (`late/dup dropped`). Anything that doesn't authenticate (unknown peer id,
   bad tag, wrong length, an old version's packet) is dropped and only counted (`rejected`);
   it never reaches playback or the mute logic. Both sides must run the same version.
@@ -387,7 +392,8 @@ connection allows a smaller buffer and less delay.
   sequence number + samples, keepalive `SAka`, ack `SAak`). The current format is the one above (also at the top of
   `src/main.rs`).
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
-  acks are under 1.5 s old; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
+  acks are under 1.5 s old, the stream isn't stopped and auto-mute is on (always, from
+  the CLI); it unmutes when any of those ends, and when `send` is told to quit; see [Auto-mute](#auto-mute-of-the-macs-speakers). This runs on
   the keepalive thread, never in the capture callback. On macOS and Linux the sender only
   reports what Windows would do.
 - The sender captures the default output device (WASAPI loopback on Windows, CoreAudio
@@ -418,7 +424,8 @@ code never crosses the network: the two sides run SPAKE2 (`spake2` crate, Ed2551
 and confirm the result both ways, so someone listening can't guess it offline, and someone
 interfering gets one guess in 100 million. Pairing gives both sides a 32-byte secret, plus
 an 8-byte id for the sender. The receiver can have several paired senders (one file each;
-restart the receiver after pairing a new one), but plays one at a time: two senders running
+a running receiver reads the files again when an unknown id says hello, at most once a
+second), but plays one at a time: two senders running
 at once would take turns. The sender keeps one receiver; pairing again replaces it. `send`
 and `receive` without a pairing exit with a message that points at `synergy-audio pair`.
 
