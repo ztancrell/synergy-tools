@@ -216,6 +216,9 @@ with no sound anywhere. Nothing to set up:
   does the same. Ctrl+C
   or closing the sender's window unmutes right away. If the speakers ever stay muted with
   no sender running, run `synergy-tools.exe audio unmute` or just unmute with the taskbar icon.
+  The mute calls do their COM work on a short-lived thread of their own, so this unmute at
+  tray start no longer crashes the tray at login (it used to make the GUI thread
+  multithreaded-COM, and the tray window then panicked with `RPC_E_CHANGED_MODE`).
 
 This works because on the author's MacBook Pro capture happens before the volume control:
 muted speakers go silent and the headphones keep playing. If muting silences your

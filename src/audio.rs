@@ -758,10 +758,18 @@ pub(crate) mod mute {
         base.join("synergy-tools").join("muted-by-us")
     }
 
+    /// Run COM work on a short-lived thread of its own: COM's apartment is per thread, and the
+    /// caller may be the tray's GUI thread, where tao's OleInitialize needs STA and panics with
+    /// RPC_E_CHANGED_MODE if we made it MTA first (the stale-mute restore at login did).
+    fn on_com_thread<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+        std::thread::scope(|s| s.spawn(f).join().expect("mute thread panicked"))
+    }
+
     // ponytail: looks up the default speakers on every call (2x a second); cache it if that ever shows up in a profile.
+    // Only call from inside on_com_thread.
     fn endpoint() -> windows::core::Result<IAudioEndpointVolume> {
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED); // per thread; repeat calls are harmless
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED); // this thread only (on_com_thread)
             let e: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
             e.GetDefaultAudioEndpoint(eRender, eConsole)?.Activate(CLSCTX_ALL, None)
         }
@@ -775,7 +783,7 @@ pub(crate) mod mute {
     pub fn restore() {
         let m = marker();
         if m.exists() {
-            match set(false) {
+            match on_com_thread(|| set(false)) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&m);
                     super::say_line("unmuted the speakers (left muted by an earlier run)".into());
@@ -803,7 +811,7 @@ pub(crate) mod mute {
 
     /// Apply `mute_action` to the default speakers; returns the state for the status line.
     pub fn update(want: bool, by_us: &mut bool) -> String {
-        let r = (|| -> windows::core::Result<&str> {
+        let r = on_com_thread(|| -> windows::core::Result<&str> {
             let muted = unsafe { endpoint()?.GetMute()?.as_bool() };
             if !muted && *by_us {
                 *by_us = false; // the user unmuted it; it's no longer ours to undo
@@ -828,8 +836,24 @@ pub(crate) mod mute {
                 MuteAction::Nothing if muted => "muted by you (left alone)",
                 MuteAction::Nothing => "not muted",
             })
-        })();
+        });
         r.map_or_else(|e| format!("mute control failed: {e}"), str::to_string)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+        /// The tray's thread must still be able to become STA (tao's OleInitialize) after mute calls.
+        #[test]
+        fn mute_calls_leave_callers_thread_free_for_sta() {
+            let mut by_us = false;
+            super::update(false, &mut by_us); // touches COM; changes nothing (want=false, not ours)
+            super::restore();
+            let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            assert_ne!(hr.0 as u32, 0x8001_0106, "RPC_E_CHANGED_MODE: a mute call made this thread MTA");
+            unsafe { CoUninitialize() };
+        }
     }
 }
 
