@@ -314,7 +314,7 @@ fn start() -> Result<(), String> {
                     let _ = p2.send_event(UserEvent::Listener(e));
                 })
             }));
-            let Err(p) = died else { return };
+            let Some(p) = died.err() else { return }; // `.err()`: `run` returns `!`, and newer rustc calls `let Err(p) = died else` unreachable
             let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
             let _ = proxy.send_event(UserEvent::Fatal(format!(
                 "the receiver stopped: {}",

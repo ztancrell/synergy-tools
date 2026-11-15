@@ -1047,16 +1047,11 @@ pub(crate) mod mute {
     /// The signal handler only writes to a pipe; a thread does the unmute outside signal context.
     pub fn on_ctrl_c_restore() {
         use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
-        extern "C" {
-            fn pipe(fds: *mut i32) -> i32;
-            fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
-            fn write(fd: i32, buf: *const u8, n: usize) -> isize;
-            fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
-        }
+        use libc::{pipe, read, signal, write, SIGINT, SIGTERM};
         static WAKE: AtomicI32 = AtomicI32::new(-1);
         extern "C" fn on_signal(sig: i32) {
             let b = sig as u8;
-            unsafe { write(WAKE.load(Relaxed), &b, 1) };
+            unsafe { write(WAKE.load(Relaxed), &b as *const u8 as *const _, 1) };
         }
         let mut fds = [0i32; 2];
         if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
@@ -1065,14 +1060,14 @@ pub(crate) mod mute {
         WAKE.store(fds[1], Relaxed);
         std::thread::spawn(move || {
             let mut b = 0u8;
-            if unsafe { read(fds[0], &mut b, 1) } == 1 {
+            if unsafe { read(fds[0], &mut b as *mut u8 as *mut _, 1) } == 1 {
                 restore();
                 std::process::exit(128 + b as i32);
             }
         });
         unsafe {
-            signal(2, on_signal); // SIGINT
-            signal(15, on_signal); // SIGTERM
+            signal(SIGINT, on_signal as extern "C" fn(i32) as libc::sighandler_t);
+            signal(SIGTERM, on_signal as extern "C" fn(i32) as libc::sighandler_t);
         }
     }
 
