@@ -334,8 +334,8 @@ otherwise it prints the command), then deletes `%LOCALAPPDATA%\Programs\synergy-
 own folder, so it says so: delete that folder by hand afterwards.
 Pairings are kept; delete `%APPDATA%\synergy-tools` to forget them.
 
-macOS: `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools uninstall` stops the tray and
-deletes the app bundle, the LaunchAgent and the Quick Action. Pairings are kept; delete
+macOS: `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools uninstall` stops the tray, unmutes
+the speakers if the tray had muted them, and deletes the app bundle, the LaunchAgent and the Quick Action. Pairings are kept; delete
 `~/Library/Application Support/synergy-tools` to forget them.
 
 Superseded: the per-tool uninstall scripts; synergy-tools uninstall replaces them (src/install.rs).

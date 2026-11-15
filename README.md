@@ -17,7 +17,7 @@ Online: <names> | No partner online | Not paired
 ─────
 Audio: streaming to <name> | receiving from <name> | waiting for partner | stopped | error: …
 Stop audio / Start audio
-Auto-mute speakers        (Windows only, a check mark)
+Auto-mute speakers        (Windows and macOS, a check mark)
 ─────
 Hide drop window / Show drop window
 ─────

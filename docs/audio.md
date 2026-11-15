@@ -29,16 +29,17 @@ The tray menu's audio section:
   shows that error and the tray retries the bind every 5 s, so audio starts by itself once the
   old receiver is gone; files keep working.
 - `Stop audio` / `Start audio`: stops or restarts the stream on both sides; either PC can
-  press it and the other follows within a second. Stopping unmutes the Windows speakers at
+  press it and the other follows within a second. Stopping unmutes the Windows or Mac speakers at
   once if we muted them. Stop is not saved: when both PCs restart, audio streams again.
   A PC that restarts alone adopts the other side's Stop (whoever changed it last wins), so
   restarting just one side does not undo a Stop.
-- Windows only: `Auto-mute speakers` (on by default): mute the Windows speakers while the
+- Windows and macOS: `Auto-mute speakers` (on by default): mute the sender's speakers while the
   Linux side is playing ([Auto-mute](#auto-mute-of-the-speakers)). Saved across restarts
   (switched off = a file `auto-mute-off` in the synergy-tools config folder,
-  `%APPDATA%\synergy-tools\`). Switching it off while muted unmutes at once. Quit stops the
+  `%APPDATA%\synergy-tools\` or `~/Library/Application Support/synergy-tools/`). Switching it
+  off while muted unmutes at once. Quit stops the
   sender (waiting up to 1 s) and then unmutes if we muted, and so does the next start after a run that ended while muted (e.g.
-  Windows shut down while streaming).
+  the PC shut down while streaming). Superseded: the switch used to be Windows only (src/tray.rs).
 
 Don't run the headless `synergy-tools audio receive` while the Linux tray runs: both want UDP
 24850. The headless commands also don't answer presence pings, so the other tray doesn't see
@@ -68,8 +69,9 @@ it (src/install.rs).
 macOS 14.6 or later, universal binary (see the README). Set the output device to 48 kHz
 (Audio MIDI Setup > the output device > Format). Install it as in
 [files.md "macOS"](files.md#macos). It streams by itself to the first online Linux partner;
-Stop/Start works as on Windows. There is no auto-mute on macOS: mute or lower the Mac's
-speakers yourself.
+Stop/Start and auto-mute work as on Windows ([Auto-mute](#auto-mute-of-the-speakers)).
+Superseded: there used to be no auto-mute on macOS; `mod mute` for macOS in src/audio.rs
+replaces muting by hand.
 
 The first run asks for **System Audio Recording** permission, naming synergy-tools (the app
 started at login or by `install`; Terminal if you run the bare binary from Terminal): allow it
@@ -196,8 +198,8 @@ tray starts audio by itself and `synergy-tools install` (src/install.rs) sets up
 
 ### Auto-mute of the speakers
 
-The sender copies what Windows plays; it doesn't redirect it, so without muting you'd hear
-the sound from both the Windows speakers and your headphones. **The sender now mutes Windows
+The sender copies what Windows (or the Mac) plays; it doesn't redirect it, so without muting you'd hear
+the sound from both the sender's speakers and your headphones. **The sender now mutes its speakers
 by itself, but only while the Linux receiver is actually receiving**, so you never end up
 with no sound anywhere. Nothing to set up:
 
@@ -210,6 +212,17 @@ with no sound anywhere. Nothing to set up:
   mute them, it leaves them alone and never unmutes them. If you unmute while the receiver
   is running, the sender mutes again within half a second; close the receiver (or the
   sender) to get the speakers back.
+- **macOS** works the same on the current default output device: it sets the device's mute
+  (output scope, main element, else channels 1 and 2). A device without a settable mute has
+  its volume saved and set to 0, and the saved volume comes back afterwards (per-channel
+  volume: channel 1's level goes back to both, so a set balance comes back centred). A volume
+  already at 0 counts as your own mute and is left alone. If the default device changes while
+  muted, the old one is unmuted first and the new one muted. The marker is
+  `~/Library/Application Support/synergy-tools/muted-by-us`; it holds the device UID and
+  whether mute or volume was used (and the old volume), so the next start, `audio unmute` or
+  `uninstall` restores the right device even after a reboot. A marker for a device that is no
+  longer connected is dropped with a note. Ctrl+C and SIGTERM (`kill`, the tray stopped by
+  `uninstall`) unmute before exiting. If the marker can't be written, it doesn't mute.
 - **If the sender is killed** (Task Manager, `Stop-Process`, a crash), it can't unmute. It leaves a marker file,
   `%LOCALAPPDATA%\synergy-tools\muted-by-us`, while it has the speakers muted; the next
   start of the sender sees it and unmutes first, and `synergy-tools.exe audio unmute`
@@ -275,7 +288,8 @@ connection allows a smaller buffer and less delay.
 - On Windows the sender mutes the default render endpoint (`IAudioEndpointVolume`) while
   acks are under 1.5 s old, the stream isn't stopped and auto-mute is on (always on in the
   CLI); it unmutes when any of that ends, and when `send` is told to quit; see [Auto-mute](#auto-mute-of-the-speakers). This runs on
-  the keepalive thread, never in the capture callback. On Linux and macOS the sender only
+  the keepalive thread, never in the capture callback. On macOS it does the same with the
+  default output device's mute (or volume) through CoreAudio. On Linux the sender only
   reports what Windows would do.
 - The sender captures the default output device (WASAPI loopback on Windows, a CoreAudio process tap on macOS 14.6+). More than
   two channels: it sends only front left/right. Mono is copied to both channels.
@@ -348,11 +362,12 @@ synergy-tools.exe audio send 192.168.1.20 --log C:\path\audio.log   # unattended
 synergy-tools.exe audio unmute                    # undo auto-mute left by a killed sender
 ```
 
-On macOS, `./synergy-tools audio send <partner>` works the same (no `--log` console notes, no `unmute`).
+On macOS, `./synergy-tools audio send <partner>` and `./synergy-tools audio unmute` work the same (no `--log` console notes).
+Superseded: macOS used to have no `unmute`.
 
 After install the program is `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" … | Out-Host`
 on Windows and `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools …` on macOS; on Linux
-`~/.local/bin/synergy-tools` (usually on PATH). `uninstall` on Windows also unmutes the speakers if
+`~/.local/bin/synergy-tools` (usually on PATH). `uninstall` on Windows and macOS also unmutes the speakers if
 the tray had muted them.
 
 `synergy-tools --version` prints the version and the git short hash it was built from.
@@ -373,7 +388,7 @@ or `send: 0 packets/s, queue-full dropped 0, send errors 4, rejected 0, receiver
 Until the handshake is done (`send: encrypted session with the receiver started`) it sends
 no audio, so packets/s stays 0.
 The mute part is `muted by us`, `not muted`, `muted by you (left alone)`, `mute control
-failed: ...`, or on Linux and macOS `no muting on this OS (Windows would be muted)`. Send errors are
+failed: ...`, or on Linux `no muting on this OS (Windows would be muted)`. Send errors are
 normal while the receiver isn't running yet. The receiver prints packets/s, buffered ms, underruns, late/duplicate/replayed packets
 dropped, packets rejected (failed to authenticate), and trims. If underruns keep rising, raise `--buffer-ms`.
 

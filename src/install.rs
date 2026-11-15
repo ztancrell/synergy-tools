@@ -664,6 +664,7 @@ pub fn install() -> Result<(), String> {
 pub fn uninstall() -> Result<(), String> {
     let p = places()?;
     let notes = apply(&macos(&p, false), &mut run_cmd)?;
+    crate::audio::mute::restore(); // the stopped tray may have muted the speakers
     println!("uninstalled {} (pairings kept in {})", macos_app(&p).display(), p.config.join("synergy-tools").display());
     for n in notes {
         println!("{n}");

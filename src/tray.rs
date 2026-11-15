@@ -378,13 +378,13 @@ fn start() -> Result<(), String> {
             audio::mute::restore();
         }
     };
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let auto_mute = tray_icon::menu::CheckMenuItem::new("Auto-mute speakers", true, sh.auto_mute.load(std::sync::atomic::Ordering::Relaxed), None);
     let menu = Menu::new();
     let built = (|| {
         menu.append_items(&[&status, &PredefinedMenuItem::separator(), &audio_item, &stop_item])?;
-        // Windows sender only: whether streaming mutes the speakers (saved across restarts).
-        #[cfg(windows)]
+        // Windows and macOS sender: whether streaming mutes the speakers (saved across restarts).
+        #[cfg(any(windows, target_os = "macos"))]
         menu.append(&auto_mute)?;
         menu.append_items(&[&PredefinedMenuItem::separator(), &toggle, &PredefinedMenuItem::separator(), &pair_item, &update_item, &quit])
     })();
@@ -594,7 +594,7 @@ fn start() -> Result<(), String> {
             Event::UserEvent(UserEvent::Menu(id)) => {
                 // muda has already flipped the check mark; follow it. Off while muted: the
                 // sender unmutes within half a second.
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "macos"))]
                 if id == *auto_mute.id() {
                     let on = auto_mute.is_checked();
                     sh.auto_mute.store(on, std::sync::atomic::Ordering::Relaxed);

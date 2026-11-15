@@ -857,8 +857,288 @@ pub(crate) mod mute {
     }
 }
 
-/// Elsewhere (macOS sender, or Linux for testing) nothing is muted; report what Windows would do.
-#[cfg(not(windows))]
+// ---------- speaker mute (macOS) ----------
+
+/// What the macOS marker records, so a later run can undo our mute: the device (by UID, which
+/// survives reboots unlike the numeric id) and how: `volume: None` = we set its mute switch,
+/// `Some(v)` = it has none, so we set its volume from `v` to 0.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct MacMuted {
+    uid: String,
+    volume: Option<f32>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl MacMuted {
+    /// Two lines: `mute` or `volume <v>`, then the device UID (the rest of the file).
+    fn encode(&self) -> String {
+        match self.volume {
+            None => format!("mute\n{}", self.uid),
+            Some(v) => format!("volume {v}\n{}", self.uid),
+        }
+    }
+
+    fn decode(s: &str) -> Option<MacMuted> {
+        let (how, uid) = s.split_once('\n')?;
+        let volume = match how {
+            "mute" => None,
+            _ => Some(how.strip_prefix("volume ")?.parse::<f32>().ok().filter(|v| (0.0..=1.0).contains(v))?),
+        };
+        (!uid.is_empty()).then(|| MacMuted { uid: uid.into(), volume })
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) mod mute {
+    use super::{mute_action, MacMuted, MuteAction};
+    use std::ffi::{c_void, CStr};
+    use std::path::PathBuf;
+    use std::ptr::null;
+
+    type Id = u32;
+    #[repr(C)]
+    struct Addr {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+    const fn fcc(s: &[u8; 4]) -> u32 {
+        u32::from_be_bytes(*s)
+    }
+    const SYSTEM: Id = 1; // kAudioObjectSystemObject
+    const GLOBAL: u32 = fcc(b"glob");
+    const OUTPUT: u32 = fcc(b"outp");
+    const MUTE: u32 = fcc(b"mute"); // kAudioDevicePropertyMute
+    const VOLUME: u32 = fcc(b"volm"); // kAudioDevicePropertyVolumeScalar
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectHasProperty(id: Id, a: *const Addr) -> u8;
+        fn AudioObjectIsPropertySettable(id: Id, a: *const Addr, out: *mut u8) -> i32;
+        fn AudioObjectGetPropertyDataSize(id: Id, a: *const Addr, qs: u32, q: *const c_void, size: *mut u32) -> i32;
+        fn AudioObjectGetPropertyData(id: Id, a: *const Addr, qs: u32, q: *const c_void, size: *mut u32, data: *mut c_void) -> i32;
+        fn AudioObjectSetPropertyData(id: Id, a: *const Addr, qs: u32, q: *const c_void, size: u32, data: *const c_void) -> i32;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFStringGetCString(s: *const c_void, buf: *mut u8, len: isize, encoding: u32) -> u8;
+        fn CFRelease(p: *const c_void);
+    }
+
+    fn check(st: i32) -> Result<(), String> {
+        if st == 0 {
+            Ok(())
+        } else {
+            Err(format!("CoreAudio error {st}"))
+        }
+    }
+
+    fn get<T: Copy>(id: Id, a: &Addr, mut v: T) -> Result<T, String> {
+        let mut size = std::mem::size_of::<T>() as u32;
+        check(unsafe { AudioObjectGetPropertyData(id, a, 0, null(), &mut size, &mut v as *mut T as *mut c_void) })?;
+        Ok(v)
+    }
+
+    fn set<T: Copy>(id: Id, a: &Addr, v: T) -> Result<(), String> {
+        check(unsafe { AudioObjectSetPropertyData(id, a, 0, null(), std::mem::size_of::<T>() as u32, &v as *const T as *const c_void) })
+    }
+
+    fn global(selector: u32) -> Addr {
+        Addr { selector, scope: GLOBAL, element: 0 }
+    }
+
+    // ponytail: looks up the default device on every call (2x a second); cache it if that ever shows up in a profile.
+    fn default_output() -> Result<Id, String> {
+        match get(SYSTEM, &global(fcc(b"dOut")), 0u32)? {
+            0 => Err("no default output device".into()),
+            id => Ok(id),
+        }
+    }
+
+    fn uid(dev: Id) -> Result<String, String> {
+        let s = get(dev, &global(fcc(b"uid ")), null::<c_void>())?;
+        if s.is_null() {
+            return Err("output device has no UID".into());
+        }
+        let mut buf = [0u8; 512];
+        let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), buf.len() as isize, 0x0800_0100) }; // UTF-8
+        unsafe { CFRelease(s) };
+        match (ok, CStr::from_bytes_until_nul(&buf)) {
+            (1.., Ok(c)) => Ok(c.to_string_lossy().into_owned()),
+            _ => Err("can't read the output device's UID".into()),
+        }
+    }
+
+    /// The device with this UID, if it is still connected.
+    fn find(want: &str) -> Option<Id> {
+        let a = global(fcc(b"dev#"));
+        let mut size = 0u32;
+        check(unsafe { AudioObjectGetPropertyDataSize(SYSTEM, &a, 0, null(), &mut size) }).ok()?;
+        let mut ids = vec![0u32; size as usize / 4];
+        check(unsafe { AudioObjectGetPropertyData(SYSTEM, &a, 0, null(), &mut size, ids.as_mut_ptr() as *mut c_void) }).ok()?;
+        ids.truncate(size as usize / 4);
+        ids.into_iter().find(|&d| uid(d).is_ok_and(|u| u == want))
+    }
+
+    /// Settable output elements of `selector`: the main one, else channels 1 and 2.
+    fn elements(dev: Id, selector: u32) -> Vec<Addr> {
+        let settable = |a: &Addr| {
+            let mut s = 0u8;
+            unsafe { AudioObjectHasProperty(dev, a) != 0 && AudioObjectIsPropertySettable(dev, a, &mut s) == 0 && s != 0 }
+        };
+        let main = Addr { selector, scope: OUTPUT, element: 0 };
+        if settable(&main) {
+            return vec![main];
+        }
+        (1..=2).map(|element| Addr { selector, scope: OUTPUT, element }).filter(|a| settable(a)).collect()
+    }
+
+    fn set_all<T: Copy>(dev: Id, addrs: &[Addr], v: T) -> Result<(), String> {
+        addrs.iter().try_for_each(|a| set(dev, a, v))
+    }
+
+    /// Exists exactly while we have the speakers muted, so a killed sender can be undone.
+    fn marker() -> PathBuf {
+        dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("synergy-tools").join("muted-by-us")
+    }
+
+    fn read_marker() -> Option<String> {
+        std::fs::read_to_string(marker()).ok()
+    }
+
+    /// Undo what the marker records and remove it; Ok(true) = we unmuted something.
+    /// A failed unmute keeps the marker for the next try; a gone device or bad marker drops it.
+    fn undo_marker() -> Result<bool, String> {
+        let Some(s) = read_marker() else { return Ok(false) };
+        let done = match MacMuted::decode(&s) {
+            Some(m) => match find(&m.uid) {
+                Some(dev) => {
+                    match m.volume {
+                        None => set_all(dev, &elements(dev, MUTE), 0u32)?,
+                        Some(v) => set_all(dev, &elements(dev, VOLUME), v)?,
+                    }
+                    true
+                }
+                None => {
+                    super::say_line(format!("can't unmute the speakers: the muted device ({}) is not connected", m.uid));
+                    false
+                }
+            },
+            None => {
+                super::say_line("ignoring an unreadable mute marker".into());
+                false
+            }
+        };
+        let _ = std::fs::remove_file(marker());
+        Ok(done)
+    }
+
+    /// If a marker says we left the speakers muted, unmute them and remove the marker.
+    pub fn restore() {
+        match undo_marker() {
+            Ok(true) => super::say_line("unmuted the speakers (left muted by an earlier run)".into()),
+            Ok(false) => {}
+            Err(e) => super::say_line(format!("can't unmute the speakers: {e}")),
+        }
+    }
+
+    /// Ctrl+C / SIGTERM (terminal `audio send`, a `kill` of the tray): unmute, then exit.
+    /// The signal handler only writes to a pipe; a thread does the unmute outside signal context.
+    pub fn on_ctrl_c_restore() {
+        use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
+        extern "C" {
+            fn pipe(fds: *mut i32) -> i32;
+            fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
+            fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+            fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+        }
+        static WAKE: AtomicI32 = AtomicI32::new(-1);
+        extern "C" fn on_signal(sig: i32) {
+            let b = sig as u8;
+            unsafe { write(WAKE.load(Relaxed), &b, 1) };
+        }
+        let mut fds = [0i32; 2];
+        if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
+            return; // the marker still covers it
+        }
+        WAKE.store(fds[1], Relaxed);
+        std::thread::spawn(move || {
+            let mut b = 0u8;
+            if unsafe { read(fds[0], &mut b, 1) } == 1 {
+                restore();
+                std::process::exit(128 + b as i32);
+            }
+        });
+        unsafe {
+            signal(2, on_signal); // SIGINT
+            signal(15, on_signal); // SIGTERM
+        }
+    }
+
+    /// Apply `mute_action` to the default output device; returns the state for the status line.
+    pub fn update(want: bool, by_us: &mut bool) -> String {
+        step(want, by_us).map_or_else(|e| format!("mute control failed: {e}"), str::to_string)
+    }
+
+    fn step(want: bool, by_us: &mut bool) -> Result<&'static str, String> {
+        let dev = default_output()?;
+        let uid = uid(dev)?;
+        if *by_us {
+            match read_marker().as_deref().and_then(MacMuted::decode) {
+                // The default device changed while muted: give the old one back first.
+                Some(m) if m.uid != uid => {
+                    undo_marker()?;
+                    *by_us = false;
+                }
+                Some(_) => {}
+                None => *by_us = false, // marker gone: `audio unmute` already undid it
+            }
+        }
+        let mute = elements(dev, MUTE);
+        let volume = if mute.is_empty() { elements(dev, VOLUME) } else { Vec::new() };
+        let muted = match (mute.first(), volume.first()) {
+            (Some(a), _) => get(dev, a, 0u32)? != 0,
+            (None, Some(a)) => get(dev, a, 0f32)? <= 0.0,
+            (None, None) => return Err("the output device has no mute or volume control".into()),
+        };
+        if !muted && *by_us {
+            *by_us = false; // the user unmuted it; it's no longer ours to undo
+            let _ = std::fs::remove_file(marker());
+        }
+        Ok(match mute_action(want, muted, *by_us) {
+            MuteAction::Mute => {
+                // ponytail: per-channel volume saves channel 1 only, so a set balance comes back centred.
+                let old = match volume.first() {
+                    Some(a) => Some(get(dev, a, 0f32)?),
+                    None => None,
+                };
+                // Marker first: a crash right after still gets undone. No marker, no mute.
+                let m = marker();
+                let _ = std::fs::create_dir_all(m.parent().unwrap());
+                std::fs::write(&m, MacMuted { uid, volume: old }.encode()).map_err(|e| format!("can't write {}: {e}", m.display()))?;
+                if mute.is_empty() {
+                    set_all(dev, &volume, 0f32)?
+                } else {
+                    set_all(dev, &mute, 1u32)?
+                }
+                *by_us = true;
+                "muted by us"
+            }
+            MuteAction::Unmute => {
+                undo_marker()?;
+                *by_us = false;
+                "not muted"
+            }
+            MuteAction::Nothing if *by_us => "muted by us",
+            MuteAction::Nothing if muted => "muted by you (left alone)",
+            MuteAction::Nothing => "not muted",
+        })
+    }
+}
+
+/// Elsewhere (Linux, which only receives, or for testing) nothing is muted; report what Windows would do.
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) mod mute {
     use super::{mute_action, MuteAction};
 
@@ -1278,6 +1558,16 @@ mod tests {
         assert!(!accept(Some(5), 5)); // duplicate
         assert!(!accept(Some(5), 3)); // late
         assert!(!accept(Some(50_000), 0)); // replay of an old packet (a restart is a new session)
+    }
+
+    #[test]
+    fn mac_mute_marker_round_trips_and_rejects_junk() {
+        for m in [MacMuted { uid: "BuiltInSpeakerDevice".into(), volume: None }, MacMuted { uid: "AppleUSBAudioEngine:x:1\n2".into(), volume: Some(0.42) }] {
+            assert_eq!(MacMuted::decode(&m.encode()), Some(m));
+        }
+        for junk in ["", "mute", "mute\n", "volume x\nuid", "volume 2\nuid", "loud\nuid"] {
+            assert_eq!(MacMuted::decode(junk), None, "{junk:?}");
+        }
     }
 
     #[test]
