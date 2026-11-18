@@ -16,6 +16,14 @@ tao = "0.37"
 # Linux: default backend = libappindicator (GTK), which falls back to an XEmbed status icon (tint2).
 tray-icon = "0.26"
 
+[dev-dependencies]
+# Icon asset generator and its check (tray.rs tests).
+png = "0.18"
+
+[build-dependencies]
+# Windows only (build.rs): the .exe icon resource.
+embed-resource = "3"
+
 [profile.release]
 strip = true
 

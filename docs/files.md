@@ -28,6 +28,8 @@ chmod +x synergy-tools-linux-x86_64
   Openbox with `~/.config/openbox/autostart` but no `openbox-xdg-autostart` helper it adds the
   line `'<path>' & # synergy-tools` to that file instead (and removes the XDG file), so the tray
   never starts twice;
+- installs the app icon `~/.local/share/icons/hicolor/256x256/apps/synergy-tools.png` (the XDG
+  autostart entry names it with `Icon=synergy-tools`);
 - adds "Send to other PC" to the right-click menus of Thunar
   (`~/.local/share/Thunar/sendto/synergy-tools.desktop`), Dolphin
   (`~/.local/share/kio/servicemenus/synergy-tools.desktop`) and Nautilus
@@ -104,8 +106,8 @@ chmod +x synergy-tools-macos-universal
 
 `install` (code: `src/install.rs`):
 
-- makes a minimal app bundle `~/Applications/synergy-tools.app` (the program plus an Info.plist,
-  ad-hoc signed with `codesign`, quarantine mark removed). It has no Dock icon. The command line
+- makes a minimal app bundle `~/Applications/synergy-tools.app` (the program, an Info.plist and
+  the app icon `Contents/Resources/synergy-tools.icns`, ad-hoc signed with `codesign`, quarantine mark removed). It has no Dock icon. The command line
   is now `~/Applications/synergy-tools.app/Contents/MacOS/synergy-tools`;
 - starts it at login with the LaunchAgent
   `~/Library/LaunchAgents/io.github.ztancrell.synergy-tools.plist` (it runs `open` on the app);
@@ -218,8 +220,10 @@ Script Editor in System Settings → Notifications; allow them there if none app
   Finder > right-click > Quick Actions > Send to other PC on macOS; it sends to the online
   partner like `synergy-tools files send`.
   Superseded: the entries came from the removed install scripts; see [Install](#install).
-- **Tray icon** (status only, not a drop target). Colours: grey = not paired, green = paired and
-  idle, blue = sending or receiving, red for 5 seconds after an error. The first menu line (greyed
+- **Tray icon** (status only, not a drop target): a rounded square with a white chain link, or
+  a hammer while not paired. Colours: grey = not paired, green = paired and
+  idle, blue = sending or receiving, red for 5 seconds after an error. The app icon (drop
+  window, Windows `.exe`, macOS app, Linux icon) is the blue square with the link. The first menu line (greyed
   out) shows the status, `Online: <names>`, `No partner online` or `Not paired`, refreshed every
   5 seconds (the hover tooltip with the same text
   works on Windows and macOS; Linux trays don't get it). Menu: status line, the audio section
@@ -324,7 +328,7 @@ If a notification can't be shown, the reason goes to stderr and the transfer is 
 ## Uninstall
 
 Linux: `synergy-tools uninstall` (or `~/.local/bin/synergy-tools uninstall`) stops the tray and removes what `install` added (the binary in
-`~/.local/bin`, the autostart entry, the three "Send to other PC" entries). Pairings are kept;
+`~/.local/bin`, the autostart entry, the app icon, the three "Send to other PC" entries). Pairings are kept;
 delete `~/.config/synergy-tools` to forget them.
 
 Windows: `& "$env:LOCALAPPDATA\Programs\synergy-tools\synergy-tools.exe" uninstall | Out-Host` stops the tray, unmutes the speakers if
@@ -351,7 +355,11 @@ The binary is `target/release/synergy-tools`. Linux needs `libgtk-3-dev`,
 `libayatana-appindicator3-dev` and `libasound2-dev` (Arch/CachyOS: `gtk3`,
 `libayatana-appindicator` and `alsa-lib`). Windows: a
 native MSVC `cargo build --release`. macOS: `xcode-select --install` and rustup, then the same
-commands. CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo build --release` on
+commands. The icons are drawn in code (`icon_rgba` in `src/tray.rs`); `assets/synergy-tools.png`,
+`.ico` and `.icns` are generated from it with `cargo test gen_icons -- --ignored`, and a test
+fails when they are stale. `build.rs` links `assets/synergy-tools.rc` (the `.ico`) into the
+Windows `.exe`.
+CI (`.github/workflows/ci.yml`) runs `cargo test` and `cargo build --release` on
 Ubuntu 22.04, Windows and macOS (each job uploads its binary as a workflow artifact: `synergy-tools-linux-x86_64`, `synergy-tools-windows-x86_64`, `synergy-tools-macos-universal`; the macOS one is universal, see the README).
 
 ## How it works

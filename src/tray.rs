@@ -154,23 +154,47 @@ enum TrayState {
     Error,
 }
 
-/// 32x32 filled rounded square: grey / green / blue / red.
-fn icon_rgba(state: TrayState) -> Vec<u8> {
+/// Signed distance (negative inside) from (px, py) to the rounded rect [x, y, w, h, radius].
+fn rrect_dist(px: f32, py: f32, [x, y, w, h, r]: [f32; 5]) -> f32 {
+    let qx = (px - x - w / 2.0).abs() - (w / 2.0 - r);
+    let qy = (py - y - h / 2.0).abs() - (h / 2.0 - r);
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+}
+
+/// `n`x`n` RGBA, drawn in a 32-unit space: a rounded square grey / green / blue / red with a
+/// white chain link (a hammer when unpaired), anti-aliased over about one pixel. The app icon
+/// (assets/, drop window) is the Busy one.
+fn icon_rgba(state: TrayState, n: u32) -> Vec<u8> {
     let [r, g, b] = match state {
-        TrayState::Unpaired => [128, 128, 128],
-        TrayState::Idle => [46, 160, 67],
-        TrayState::Busy => [47, 111, 237],
-        TrayState::Error => [215, 58, 73],
+        TrayState::Unpaired => [128.0, 128.0, 128.0],
+        TrayState::Idle => [46.0, 160.0, 67.0],
+        TrayState::Busy => [47.0, 111.0, 237.0],
+        TrayState::Error => [215.0, 58.0, 73.0],
     };
-    const N: i32 = 32;
-    const R: i32 = 8; // corner radius
-    let mut px = Vec::with_capacity((N * N * 4) as usize);
-    for y in 0..N {
-        for x in 0..N {
-            // Distance of the pixel centre past the corner circle's centre, per axis.
-            let (dx, dy) = ((R - x).max(x - (N - 1 - R)).max(0), (R - y).max(y - (N - 1 - R)).max(0));
-            let a = if dx * dx + dy * dy <= R * R { 255 } else { 0 };
-            px.extend([r, g, b, a]);
+    // The mark's parts in its own frame, that frame's rotation (degrees, clockwise) about the
+    // centre, and whether the parts are outlines (stroke 2.8) or filled.
+    let (deg, parts, outline): (f32, [[f32; 5]; 2], bool) = match state {
+        TrayState::Unpaired => (40.0, [[14.6, 11.0, 2.8, 17.0, 1.2], [8.5, 5.0, 15.0, 6.5, 1.6]], false),
+        _ => (-45.0, [[4.5, 12.0, 14.0, 8.0, 4.0], [13.5, 12.0, 14.0, 8.0, 4.0]], true),
+    };
+    let (sin, cos) = deg.to_radians().sin_cos();
+    let unit = 32.0 / n as f32; // one pixel in drawing units
+    let cover = |d: f32| (0.5 - d / unit).clamp(0.0, 1.0);
+    let mut px = Vec::with_capacity((n * n * 4) as usize);
+    for y in 0..n {
+        for x in 0..n {
+            let (fx, fy) = ((x as f32 + 0.5) * unit, (y as f32 + 0.5) * unit);
+            // Undo the mark's rotation.
+            let (dx, dy) = (fx - 16.0, fy - 16.0);
+            let (mx, my) = (16.0 + dx * cos + dy * sin, 16.0 - dx * sin + dy * cos);
+            let d = parts
+                .iter()
+                .map(|&p| if outline { rrect_dist(mx, my, p).abs() - 1.4 } else { rrect_dist(mx, my, p) })
+                .fold(f32::MAX, f32::min);
+            let m = cover(d);
+            let mix = |c: f32| (c + (255.0 - c) * m).round() as u8;
+            let a = cover(rrect_dist(fx, fy, [0.0, 0.0, 32.0, 32.0, 8.0]));
+            px.extend([mix(r), mix(g), mix(b), (a * 255.0).round() as u8]);
         }
     }
     px
@@ -276,7 +300,7 @@ fn spawn_send(proxy: &tao::event_loop::EventLoopProxy<UserEvent>, p: Partner, fi
 }
 
 fn tray_icon_for(s: TrayState) -> Icon {
-    Icon::from_rgba(icon_rgba(s), 32, 32).expect("32x32 RGBA")
+    Icon::from_rgba(icon_rgba(s, 32), 32, 32).expect("32x32 RGBA")
 }
 
 /// A tray app started at login has no visible stderr: failures also go to a notification.
@@ -343,7 +367,8 @@ fn start() -> Result<(), String> {
         .with_title(title_for(&DropState::Idle))
         .with_inner_size(LogicalSize::new(SIZE, SIZE))
         .with_resizable(false)
-        .with_always_on_top(true);
+        .with_always_on_top(true)
+        .with_window_icon(tao::window::Icon::from_rgba(icon_rgba(TrayState::Busy, 64), 64, 64).ok());
     // macOS: minimizing would send the window to the Dock, which a tray-only app hides.
     #[cfg(target_os = "macos")]
     let builder = builder.with_minimizable(false);
@@ -738,7 +763,8 @@ mod tests {
 
     #[test]
     fn icon_size() {
-        assert_eq!(icon_rgba(TrayState::Idle).len(), 32 * 32 * 4);
+        assert_eq!(icon_rgba(TrayState::Idle, 32).len(), 32 * 32 * 4);
+        assert_eq!(icon_rgba(TrayState::Idle, 16).len(), 16 * 16 * 4);
     }
 
     #[test]
@@ -746,12 +772,79 @@ mod tests {
         let all = [TrayState::Unpaired, TrayState::Idle, TrayState::Busy, TrayState::Error];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
-                assert_ne!(icon_rgba(*a), icon_rgba(*b));
+                assert_ne!(icon_rgba(*a, 32), icon_rgba(*b, 32));
             }
         }
-        let px = icon_rgba(TrayState::Idle);
+        let px = icon_rgba(TrayState::Idle, 32);
         assert_eq!(px[3], 0, "corner is transparent");
         assert_eq!(px[(16 * 32 + 16) * 4 + 3], 255, "centre is opaque");
+        assert_eq!(px[(16 * 32 + 16) * 4..][..3], [46, 160, 67], "centre is inside the link, not on it");
+        assert!(px.chunks(4).any(|p| p[..3] == [255, 255, 255]), "white mark");
+    }
+
+    fn png(rgba: &[u8], n: u32) -> Vec<u8> {
+        let mut out = vec![];
+        let mut e = ::png::Encoder::new(&mut out, n, n);
+        e.set_color(::png::ColorType::Rgba);
+        e.set_depth(::png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(rgba).unwrap();
+        out
+    }
+
+    /// Fails when assets/ no longer match the drawing: run `cargo test gen_icons -- --ignored`.
+    #[test]
+    fn icon_assets_match_drawing() {
+        let file = include_bytes!("../assets/synergy-tools.png");
+        let mut r = ::png::Decoder::new(std::io::Cursor::new(&file[..])).read_info().unwrap();
+        let mut buf = vec![0; r.output_buffer_size().unwrap()];
+        r.next_frame(&mut buf).unwrap();
+        let want = icon_rgba(TrayState::Busy, 256);
+        assert_eq!(buf.len(), want.len());
+        // ±1: sin/cos may round differently on another OS.
+        assert!(buf.iter().zip(&want).all(|(a, b)| a.abs_diff(*b) <= 1), "assets are stale: regenerate them");
+    }
+
+    /// Writes assets/synergy-tools.{png,ico,icns} and previews in target/icon-preview/.
+    #[test]
+    #[ignore]
+    fn gen_icons() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let app = |n| png(&icon_rgba(TrayState::Busy, n), n);
+        std::fs::write(root.join("assets/synergy-tools.png"), app(256)).unwrap();
+        // ICO: header, 16-byte entries, then PNG images (Vista+).
+        let sizes = [16, 24, 32, 48, 256];
+        let imgs: Vec<Vec<u8>> = sizes.iter().map(|&n| app(n)).collect();
+        let mut ico = [0u16, 1, sizes.len() as u16].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+        let mut off = 6 + 16 * sizes.len();
+        for (&n, img) in sizes.iter().zip(&imgs) {
+            let wh = if n == 256 { 0 } else { n as u8 };
+            ico.extend([wh, wh, 0, 0]);
+            ico.extend(1u16.to_le_bytes());
+            ico.extend(32u16.to_le_bytes());
+            ico.extend((img.len() as u32).to_le_bytes());
+            ico.extend((off as u32).to_le_bytes());
+            off += img.len();
+        }
+        imgs.iter().for_each(|i| ico.extend(i));
+        std::fs::write(root.join("assets/synergy-tools.ico"), ico).unwrap();
+        // ICNS: "icns" + total length, then (type, length incl. 8-byte header, PNG) chunks.
+        let mut body = vec![];
+        for (ty, n) in [(b"icp4", 16), (b"icp5", 32), (b"ic07", 128), (b"ic08", 256), (b"ic09", 512)] {
+            let img = app(n);
+            body.extend(ty);
+            body.extend((img.len() as u32 + 8).to_be_bytes());
+            body.extend(img);
+        }
+        let mut icns = b"icns".to_vec();
+        icns.extend((body.len() as u32 + 8).to_be_bytes());
+        icns.extend(body);
+        std::fs::write(root.join("assets/synergy-tools.icns"), icns).unwrap();
+        let prev = root.join("target/icon-preview");
+        std::fs::create_dir_all(&prev).unwrap();
+        for (name, s) in [("unpaired", TrayState::Unpaired), ("idle", TrayState::Idle), ("busy", TrayState::Busy), ("error", TrayState::Error)] {
+            std::fs::write(prev.join(format!("tray-{name}-32.png")), png(&icon_rgba(s, 32), 32)).unwrap();
+        }
+        std::fs::write(prev.join("app-256.png"), app(256)).unwrap();
     }
 
     #[test]

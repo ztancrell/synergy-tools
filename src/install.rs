@@ -19,6 +19,8 @@ pub enum Step {
     Write(PathBuf, String),
     /// Same, mode 0o755 on unix.
     WriteExec(PathBuf, String),
+    /// Same as `Write`, binary (the app icon).
+    Bytes(PathBuf, &'static [u8]),
     /// exe -> place: no-op onto itself; the old target is renamed to `<to>.old` first.
     Copy(PathBuf, PathBuf),
     /// Autostart file, marker, line to add; skipped if the file is missing.
@@ -68,7 +70,7 @@ fn delete(p: &Path) -> std::io::Result<()> {
     }
 }
 
-fn write(p: &Path, text: &str, exec: bool) -> Result<(), String> {
+fn write(p: &Path, text: impl AsRef<[u8]>, exec: bool) -> Result<(), String> {
     let err = |e: std::io::Error| format!("can't write {}: {e}", p.display());
     if let Some(d) = p.parent() {
         fs::create_dir_all(d).map_err(err)?;
@@ -142,6 +144,7 @@ pub fn apply(steps: &[Step], run: &mut dyn FnMut(&[String]) -> bool) -> Result<V
             }
             Step::Write(p, t) => write(p, t, false)?,
             Step::WriteExec(p, t) => write(p, t, true)?,
+            Step::Bytes(p, b) => write(p, b, false)?,
             Step::Copy(a, b) => {
                 copy(a, b)?;
                 // Don't carry the Mark of the Web of a downloaded exe into the install.
@@ -213,6 +216,7 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
     let thunar = p.data.join("Thunar/sendto/synergy-tools.desktop");
     let dolphin = p.data.join("kio/servicemenus/synergy-tools.desktop");
     let nautilus = p.data.join("nautilus/scripts/Send to other PC");
+    let icon = p.data.join("icons/hicolor/256x256/apps/synergy-tools.png");
     let old_bin = |n: &str| p.home.join(format!(".local/bin/{n}"));
     let s = |p: &Path| p.display().to_string();
     if !install {
@@ -225,6 +229,7 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
             Delete(thunar),
             Delete(dolphin),
             Delete(nautilus),
+            Delete(icon),
         ];
     }
     let q = desktop_quote(&bin);
@@ -244,6 +249,7 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
         Delete(p.config.join("synergy-audio")),
         Delete(p.config.join("synergy-dragndrop")),
         Copy(p.exe.clone(), bin.clone()),
+        Bytes(icon, include_bytes!("../assets/synergy-tools.png")),
     ];
     if openbox {
         v.push(Delete(xdg));
@@ -254,7 +260,7 @@ pub fn linux(p: &Places, install: bool, openbox: bool) -> Vec<Step> {
             xdg,
             format!(
                 "[Desktop Entry]\nType=Application\nName=synergy-tools\nComment=Audio and files to your other PC\n\
-                 Exec={q}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+                 Icon=synergy-tools\nExec={q}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
             ),
         ));
     }
@@ -414,6 +420,7 @@ fn info_plist() -> String {
          \t<key>CFBundleIdentifier</key>\n\t<string>{MAC_ID}</string>\n\
          \t<key>CFBundleName</key>\n\t<string>synergy-tools</string>\n\
          \t<key>CFBundleExecutable</key>\n\t<string>synergy-tools</string>\n\
+         \t<key>CFBundleIconFile</key>\n\t<string>synergy-tools</string>\n\
          \t<key>CFBundlePackageType</key>\n\t<string>APPL</string>\n\
          \t<key>CFBundleShortVersionString</key>\n\t<string>{}</string>\n\
          \t<key>LSMinimumSystemVersion</key>\n\t<string>14.6</string>\n\
@@ -518,6 +525,7 @@ pub fn macos(p: &Places, install: bool) -> Vec<Step> {
     vec![
         Copy(p.exe.clone(), bin.clone()),
         Write(contents.join("Info.plist"), info_plist()),
+        Bytes(contents.join("Resources").join("synergy-tools.icns"), include_bytes!("../assets/synergy-tools.icns")),
         // A downloaded binary keeps its quarantine mark; the ad-hoc signature covers the new Info.plist.
         Try(cmd(&["xattr", "-dr", "com.apple.quarantine", &s(&app)])),
         Try(cmd(&["codesign", "--force", "--sign", "-", &s(&app)])),
@@ -774,6 +782,8 @@ mod tests {
         let xdg = p.config.join("autostart/synergy-tools.desktop");
         let x = linux(&p, true, false);
         assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains(&format!("Exec={}\n", desktop_quote(&p.home.join(".local/bin/synergy-tools")))))));
+        assert!(x.iter().any(|st| matches!(st, Write(f, t) if *f == xdg && t.contains("\nIcon=synergy-tools\n"))));
+        assert!(x.iter().any(|st| matches!(st, Bytes(f, _) if *f == p.data.join("icons/hicolor/256x256/apps/synergy-tools.png"))));
         assert!(!x.contains(&Delete(xdg.clone())));
         let o = linux(&p, true, true);
         assert!(o.contains(&Delete(xdg.clone())));
@@ -787,7 +797,7 @@ mod tests {
         let xdg = p.config.join("autostart/synergy-tools.desktop");
         for b in [false, true] {
             let targets = |st: &Step| match st {
-                Write(f, _) | WriteExec(f, _) | Copy(_, f) => Some(f.clone()),
+                Write(f, _) | WriteExec(f, _) | Bytes(f, _) | Copy(_, f) => Some(f.clone()),
                 _ => None,
             };
             let mut added: Vec<PathBuf> = linux(&p, true, b).iter().filter_map(targets).collect();
@@ -913,6 +923,7 @@ mod tests {
         let want = vec![
             Copy(p.exe.clone(), bin.clone()),
             Write(app.join("Contents").join("Info.plist"), info_plist()),
+            Bytes(app.join("Contents/Resources/synergy-tools.icns"), include_bytes!("../assets/synergy-tools.icns")),
             Try(v(&["xattr", "-dr", "com.apple.quarantine", &s(&app)])),
             Try(v(&["codesign", "--force", "--sign", "-", &s(&app)])),
             Write(agent.clone(), launch_agent(&app)),
@@ -943,6 +954,7 @@ mod tests {
             &format!("<string>{}</string>", env!("CARGO_PKG_VERSION")),
             "<string>14.6</string>",
             "<string>APPL</string>",
+            "<key>CFBundleIconFile</key>\n\t<string>synergy-tools</string>",
         ] {
             assert!(t.contains(want), "{want} in {t}");
         }
@@ -977,7 +989,7 @@ mod tests {
         let (p, app, _, agent, wf) = mp();
         let deleted: Vec<PathBuf> = macos(&p, false).into_iter().filter_map(|st| if let Delete(f) = st { Some(f) } else { None }).collect();
         for st in macos(&p, true) {
-            if let Write(f, _) | WriteExec(f, _) | Copy(_, f) = st {
+            if let Write(f, _) | WriteExec(f, _) | Bytes(f, _) | Copy(_, f) = st {
                 assert!(f.starts_with(&app) || f.starts_with(&wf) || f == agent, "{f:?}");
                 assert!(deleted.iter().any(|d| f.starts_with(d)), "{f:?}");
             }
