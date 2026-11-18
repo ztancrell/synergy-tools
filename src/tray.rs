@@ -338,7 +338,8 @@ fn start() -> Result<(), String> {
                     let _ = p2.send_event(UserEvent::Listener(e));
                 })
             }));
-            let Err(p) = died else { return };
+            // `run` returns `!`, so `died` is always Err; unwrap_err compiles on old and new rustc.
+            let p = died.unwrap_err();
             let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
             let _ = proxy.send_event(UserEvent::Fatal(format!(
                 "the receiver stopped: {}",
